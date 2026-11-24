@@ -1,0 +1,6 @@
+{
+  "name": "ScanShift — Quét Mã Vạch & Lịch Làm Việc",
+  "description": "Ứng dụng web responsive trên máy tính và điện thoại giúp quét mã vạch liên tục, lưu trữ, xuất Excel, quản lý lịch làm việc, đăng nhập Gmail và liên kết Supabase.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

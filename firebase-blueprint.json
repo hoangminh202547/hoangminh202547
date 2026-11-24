@@ -1,0 +1,244 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private profile and optional Supabase link configuration for an authenticated Gmail user.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the user."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "Verified Gmail address."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "User display name."
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Optional avatar URL."
+        },
+        "supabaseUrl": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional linked Supabase project URL."
+        },
+        "supabaseAnonKey": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Optional linked Supabase public anon key."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": ["uid", "email", "displayName", "updatedAt"]
+    },
+    "BarcodeScan": {
+      "title": "BarcodeScan",
+      "description": "A scanned or manually entered barcode record belonging to a user.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase Auth UID."
+        },
+        "ownerEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "Owner email."
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Decoded barcode value."
+        },
+        "format": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "Barcode symbology format or capture method."
+        },
+        "sessionName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Batch or inventory session name."
+        },
+        "quantity": {
+          "type": "integer",
+          "description": "Count of items scanned for this barcode."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional item note."
+        },
+        "syncedToSupabase": {
+          "type": "boolean",
+          "description": "Whether this record has been synced to Supabase."
+        },
+        "scannedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when scanned."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when last updated."
+        }
+      },
+      "required": [
+        "ownerId",
+        "ownerEmail",
+        "code",
+        "format",
+        "sessionName",
+        "quantity",
+        "note",
+        "syncedToSupabase",
+        "scannedAt",
+        "updatedAt"
+      ]
+    },
+    "WorkSchedule": {
+      "title": "WorkSchedule",
+      "description": "A registered work shift or schedule entry managed by a user.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase Auth UID."
+        },
+        "ownerEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "Owner email."
+        },
+        "employeeName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Staff or registrant name."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150,
+          "description": "Shift title or task description."
+        },
+        "workDate": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "description": "Scheduled date in YYYY-MM-DD format."
+        },
+        "shiftType": {
+          "type": "string",
+          "enum": ["morning", "afternoon", "evening", "full_day", "custom"],
+          "description": "Shift category."
+        },
+        "startTime": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^[0-9]{2}:[0-9]{2}$",
+          "description": "Shift start time HH:MM."
+        },
+        "endTime": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^[0-9]{2}:[0-9]{2}$",
+          "description": "Shift end time HH:MM."
+        },
+        "location": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Workplace or warehouse location."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["registered", "confirmed", "completed", "cancelled"],
+          "description": "Schedule status."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 400,
+          "description": "Optional shift notes."
+        },
+        "syncedToSupabase": {
+          "type": "boolean",
+          "description": "Whether this schedule is synced to Supabase."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "ownerId",
+        "ownerEmail",
+        "employeeName",
+        "title",
+        "workDate",
+        "shiftType",
+        "startTime",
+        "endTime",
+        "location",
+        "status",
+        "note",
+        "syncedToSupabase",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile and Supabase link settings, readable and writable only by the owning user."
+    },
+    "/barcode_scans/{scanId}": {
+      "schema": { "$ref": "#/entities/BarcodeScan" },
+      "description": "Continuous barcode scan logs owned by authenticated users."
+    },
+    "/work_schedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/WorkSchedule" },
+      "description": "Work schedule registrations and shift logs owned by authenticated users."
+    }
+  }
+}

@@ -1,0 +1,187 @@
+/**
+ * Payload-First Security Test Specification for Firestore Rules
+ * Verifies the "Dirty Dozen" adversarial payloads against DRAFT_firestore.rules / firestore.rules invariants.
+ */
+
+export interface DirtyDozenCase {
+  id: string;
+  collection: 'users' | 'barcode_scans' | 'work_schedules';
+  operation: 'get' | 'list' | 'create' | 'update' | 'delete';
+  auth: { uid: string; emailVerified: boolean; email: string } | null;
+  docId?: string;
+  payload?: Record<string, unknown>;
+  expected: 'PERMISSION_DENIED';
+}
+
+export const dirtyDozenPayloads: DirtyDozenCase[] = [
+  {
+    id: 'DD-01-unauthenticated-list-scans',
+    collection: 'barcode_scans',
+    operation: 'list',
+    auth: null,
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-02-unverified-email-create-scan',
+    collection: 'barcode_scans',
+    operation: 'create',
+    docId: 'scan_01',
+    auth: { uid: 'user_a', emailVerified: false, email: 'a@gmail.com' },
+    payload: {
+      ownerId: 'user_a',
+      ownerEmail: 'a@gmail.com',
+      code: '8934563138165',
+      format: 'EAN_13',
+      sessionName: 'Kho 1',
+      quantity: 1,
+      note: '',
+      syncedToSupabase: false,
+    },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-03-spoofed-ownerId-create-scan',
+    collection: 'barcode_scans',
+    operation: 'create',
+    docId: 'scan_02',
+    auth: { uid: 'user_a', emailVerified: true, email: 'a@gmail.com' },
+    payload: {
+      ownerId: 'victim_uid',
+      ownerEmail: 'a@gmail.com',
+      code: '8934563138165',
+      format: 'EAN_13',
+      sessionName: 'Kho 1',
+      quantity: 1,
+      note: '',
+      syncedToSupabase: false,
+    },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-04-shadow-field-injection-user',
+    collection: 'users',
+    operation: 'create',
+    docId: 'user_a',
+    auth: { uid: 'user_a', emailVerified: true, email: 'a@gmail.com' },
+    payload: {
+      uid: 'user_a',
+      email: 'a@gmail.com',
+      displayName: 'User A',
+      isAdmin: true,
+    },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-05-oversized-barcode-code',
+    collection: 'barcode_scans',
+    operation: 'create',
+    docId: 'scan_03',
+    auth: { uid: 'user_a', emailVerified: true, email: 'a@gmail.com' },
+    payload: {
+      ownerId: 'user_a',
+      ownerEmail: 'a@gmail.com',
+      code: 'X'.repeat(250),
+      format: 'CODE_128',
+      sessionName: 'Kho 1',
+      quantity: 1,
+      note: '',
+      syncedToSupabase: false,
+    },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-06-invalid-quantity-zero',
+    collection: 'barcode_scans',
+    operation: 'create',
+    docId: 'scan_04',
+    auth: { uid: 'user_a', emailVerified: true, email: 'a@gmail.com' },
+    payload: {
+      ownerId: 'user_a',
+      ownerEmail: 'a@gmail.com',
+      code: '12345678',
+      format: 'EAN_8',
+      sessionName: 'Kho 1',
+      quantity: 0,
+      note: '',
+      syncedToSupabase: false,
+    },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-07-forged-client-timestamp',
+    collection: 'barcode_scans',
+    operation: 'create',
+    docId: 'scan_05',
+    auth: { uid: 'user_a', emailVerified: true, email: 'a@gmail.com' },
+    payload: {
+      ownerId: 'user_a',
+      ownerEmail: 'a@gmail.com',
+      code: '12345678',
+      format: 'EAN_8',
+      sessionName: 'Kho 1',
+      quantity: 1,
+      note: '',
+      syncedToSupabase: false,
+      scannedAt: '2020-01-01T00:00:00Z',
+      updatedAt: '2020-01-01T00:00:00Z',
+    },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-08-cross-user-read-schedule',
+    collection: 'work_schedules',
+    operation: 'get',
+    docId: 'sched_victim',
+    auth: { uid: 'user_a', emailVerified: true, email: 'a@gmail.com' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-09-invalid-work-date-format',
+    collection: 'work_schedules',
+    operation: 'create',
+    docId: 'sched_01',
+    auth: { uid: 'user_a', emailVerified: true, email: 'a@gmail.com' },
+    payload: {
+      ownerId: 'user_a',
+      ownerEmail: 'a@gmail.com',
+      employeeName: 'Nguyen Van A',
+      title: 'Ca sang',
+      workDate: '24/11/2026',
+      shiftType: 'morning',
+      startTime: '08:00',
+      endTime: '12:00',
+      location: 'Kho A',
+      status: 'registered',
+      note: '',
+      syncedToSupabase: false,
+    },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-10-update-cancelled-terminal-schedule',
+    collection: 'work_schedules',
+    operation: 'update',
+    docId: 'sched_cancelled',
+    auth: { uid: 'user_a', emailVerified: true, email: 'a@gmail.com' },
+    payload: { status: 'confirmed' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-11-mutate-immutable-ownerId-schedule',
+    collection: 'work_schedules',
+    operation: 'update',
+    docId: 'sched_02',
+    auth: { uid: 'user_a', emailVerified: true, email: 'a@gmail.com' },
+    payload: { ownerId: 'user_b' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 'DD-12-invalid-doc-id-poisoning',
+    collection: 'barcode_scans',
+    operation: 'create',
+    docId: 'bad$id_'.repeat(30),
+    auth: { uid: 'user_a', emailVerified: true, email: 'a@gmail.com' },
+    payload: { code: '123' },
+    expected: 'PERMISSION_DENIED',
+  },
+];
