@@ -24,6 +24,11 @@ interface WorkScheduleTabProps {
   schedules: WorkSchedule[];
   loading: boolean;
   defaultEmployeeName: string;
+  canEdit: boolean;
+  canExport: boolean;
+  canSupabase: boolean;
+  showOwnerEmail: boolean;
+  isAdmin: boolean;
   supabaseReady: boolean;
   isSyncing: boolean;
   onCreateSchedule: (data: {
@@ -106,6 +111,11 @@ export function WorkScheduleTab({
   schedules,
   loading,
   defaultEmployeeName,
+  canEdit,
+  canExport,
+  canSupabase,
+  showOwnerEmail,
+  isAdmin,
   supabaseReady,
   isSyncing,
   onCreateSchedule,
@@ -356,7 +366,7 @@ export function WorkScheduleTab({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          {supabaseReady && (
+          {canSupabase && supabaseReady && (
             <button
               type="button"
               onClick={onSyncToSupabase}
@@ -370,24 +380,28 @@ export function WorkScheduleTab({
             </button>
           )}
 
-          <button
-            type="button"
-            onClick={handleExportExcel}
-            disabled={schedules.length === 0}
-            className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors whitespace-nowrap"
-          >
-            <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
-            <span>Xuất Excel</span>
-          </button>
+          {canExport && (
+            <button
+              type="button"
+              onClick={handleExportExcel}
+              disabled={schedules.length === 0}
+              className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors whitespace-nowrap"
+            >
+              <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+              <span>Xuất Excel</span>
+            </button>
+          )}
 
-          <button
-            type="button"
-            onClick={() => openCreateModal()}
-            className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap"
-          >
-            <Plus className="h-4 w-4" />
-            <span>Đăng ký lịch làm việc</span>
-          </button>
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => openCreateModal()}
+              className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Đăng ký lịch làm việc</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -495,7 +509,7 @@ export function WorkScheduleTab({
               ? `Lịch làm việc ngày ${selectedDate.split('-').reverse().join('/')}`
               : `Danh sách lịch làm việc (${filteredSchedules.length})`}
           </h3>
-          {viewMode === 'week' && (
+          {canEdit && viewMode === 'week' && (
             <button
               type="button"
               onClick={() => openCreateModal(selectedDate)}
@@ -526,16 +540,18 @@ export function WorkScheduleTab({
             <p className="mt-1.5 text-sm text-slate-600">
               Nhấn "Đăng ký lịch làm việc" để tạo ca làm mới.
             </p>
-            <button
-              type="button"
-              onClick={() =>
-                openCreateModal(viewMode === 'week' ? selectedDate : todayStr)
-              }
-              className="mt-4 min-h-[44px] inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Đăng ký ca làm</span>
-            </button>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() =>
+                  openCreateModal(viewMode === 'week' ? selectedDate : todayStr)
+                }
+                className="mt-4 min-h-[44px] inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Đăng ký ca làm</span>
+              </button>
+            )}
           </div>
         ) : (
           <div className="divide-y divide-slate-100">
@@ -587,6 +603,11 @@ export function WorkScheduleTab({
                         {calcHours(item.startTime, item.endTime)}h)
                       </span>
                       <span>Nhân sự: {item.employeeName}</span>
+                      {showOwnerEmail && (
+                        <span className="text-slate-500 font-mono text-xs">
+                          ({item.ownerEmail})
+                        </span>
+                      )}
                       {item.location && (
                         <span className="inline-flex items-center gap-1">
                           <MapPin className="h-4 w-4 text-slate-400" />
@@ -601,65 +622,69 @@ export function WorkScheduleTab({
                   </div>
 
                   {/* Actions */}
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    {item.status === 'registered' && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onUpdateSchedule(item, { status: 'confirmed' })
-                        }
-                        className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors whitespace-nowrap"
-                      >
-                        <CheckCircle2 className="h-4 w-4" />
-                        <span>Xác nhận</span>
-                      </button>
-                    )}
-
-                    {(item.status === 'registered' ||
-                      item.status === 'confirmed') && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onUpdateSchedule(item, { status: 'completed' })
-                        }
-                        className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap"
-                      >
-                        <CheckCircle2 className="h-4 w-4" />
-                        <span>Hoàn thành</span>
-                      </button>
-                    )}
-
-                    {!isCancelled && (
-                      <>
+                  {canEdit && (
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      {item.status === 'registered' && (
                         <button
                           type="button"
-                          onClick={() => openEditModal(item)}
-                          className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-100 transition-colors"
-                          aria-label="Chỉnh sửa ca làm"
+                          onClick={() =>
+                            onUpdateSchedule(item, { status: 'confirmed' })
+                          }
+                          className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors whitespace-nowrap"
                         >
-                          <Edit3 className="h-4 w-4" />
+                          <CheckCircle2 className="h-4 w-4" />
+                          <span>Xác nhận</span>
                         </button>
+                      )}
 
+                      {(item.status === 'registered' ||
+                        item.status === 'confirmed') && (
                         <button
                           type="button"
-                          onClick={() => setCancelTarget(item)}
-                          className="min-h-[44px] inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-amber-700 bg-white border border-amber-200 rounded-lg hover:bg-amber-50 transition-colors whitespace-nowrap"
+                          onClick={() =>
+                            onUpdateSchedule(item, { status: 'completed' })
+                          }
+                          className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap"
                         >
-                          <XCircle className="h-4 w-4" />
-                          <span>Hủy ca</span>
+                          <CheckCircle2 className="h-4 w-4" />
+                          <span>Hoàn thành</span>
                         </button>
-                      </>
-                    )}
+                      )}
 
-                    <button
-                      type="button"
-                      onClick={() => setDeleteTarget(item)}
-                      className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50 transition-colors"
-                      aria-label="Xóa lịch làm việc"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
+                      {(!isCancelled || isAdmin) && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => openEditModal(item)}
+                            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-100 transition-colors"
+                            aria-label="Chỉnh sửa ca làm"
+                          >
+                            <Edit3 className="h-4 w-4" />
+                          </button>
+
+                          {!isCancelled && (
+                            <button
+                              type="button"
+                              onClick={() => setCancelTarget(item)}
+                              className="min-h-[44px] inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-amber-700 bg-white border border-amber-200 rounded-lg hover:bg-amber-50 transition-colors whitespace-nowrap"
+                            >
+                              <XCircle className="h-4 w-4" />
+                              <span>Hủy ca</span>
+                            </button>
+                          )}
+                        </>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(item)}
+                        className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50 transition-colors"
+                        aria-label="Xóa lịch làm việc"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}

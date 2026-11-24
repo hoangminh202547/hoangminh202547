@@ -21,8 +21,12 @@ import {
   Database,
   LogOut,
   ScanBarcode,
+  ShieldCheck,
+  UserCircle,
   X,
 } from 'lucide-react';
+import { AccessControlTab } from './components/AccessControlTab';
+import { AccessPendingScreen } from './components/AccessPendingScreen';
 import { BarcodeScannerTab } from './components/BarcodeScannerTab';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SignInScreen } from './components/SignInScreen';
@@ -37,6 +41,12 @@ import {
   testConnection,
 } from './lib/firebase';
 import {
+  ROLE_LABELS,
+  SUPER_ADMIN_EMAIL,
+  emailToKey,
+  normalizeEmail,
+} from './lib/permissions';
+import {
   getEnvSupabaseConfig,
   isValidSupabaseConfig,
   pullFromSupabase,
@@ -45,11 +55,14 @@ import {
 } from './lib/supabase';
 import type {
   AppTab,
+  AuthorizedEmail,
   BarcodeScan,
+  EffectivePermissions,
   ScheduleStatus,
   ShiftType,
   SupabaseConfig,
   ToastMessage,
+  UserRole,
   WorkSchedule,
 } from './types';
 
@@ -57,6 +70,23 @@ function MainApp() {
   const [authReady, setAuthReady] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<AppTab>('scanner');
+
+  // Access control & permissions state
+  const [accessChecked, setAccessChecked] = useState(false);
+  const [recheckingAccess, setRecheckingAccess] = useState(false);
+  const [accessDeactivated, setAccessDeactivated] = useState(false);
+  const [permissions, setPermissions] = useState<EffectivePermissions>({
+    authorized: false,
+    isSuperAdmin: false,
+    role: 'staff',
+    allowBarcode: false,
+    allowSchedule: false,
+    allowExport: false,
+    allowSupabase: false,
+  });
+
+  const [authorizedMembers, setAuthorizedMembers] = useState<AuthorizedEmail[]>([]);
+  const [membersLoading, setMembersLoading] = useState(false);
 
   const [scans, setScans] = useState<BarcodeScan[]>([]);
   const [scansLoading, setScansLoading] = useState(true);
@@ -93,6 +123,18 @@ function MainApp() {
       setAuthReady(true);
 
       if (!currentUser) {
+        setAccessChecked(false);
+        setAccessDeactivated(false);
+        setPermissions({
+          authorized: false,
+          isSuperAdmin: false,
+          role: 'staff',
+          allowBarcode: false,
+          allowSchedule: false,
+          allowExport: false,
+          allowSupabase: false,
+        });
+        setAuthorizedMembers([]);
         setScans([]);
         setSchedules([]);
         setSupabaseConfig(getEnvSupabaseConfig());
@@ -134,6 +176,114 @@ function MainApp() {
     return () => unsubscribe();
   }, []);
 
+  // Resolve real-time RBAC permissions for the signed-in Gmail
+  useEffect(() => {
+    if (!user || !user.email) return;
+    const cleanEmail = normalizeEmail(user.email);
+    const isRootAdmin = cleanEmail === SUPER_ADMIN_EMAIL;
+
+    if (isRootAdmin) {
+      setPermissions({
+        authorized: true,
+        isSuperAdmin: true,
+        role: 'admin',
+        allowBarcode: true,
+        allowSchedule: true,
+        allowExport: true,
+        allowSupabase: true,
+      });
+      setAccessDeactivated(false);
+      setAccessChecked(true);
+      return;
+    }
+
+    const emailDocId = emailToKey(cleanEmail);
+    const accessPath = `authorized_emails/${emailDocId}`;
+    setAccessChecked(false);
+
+    const unsub = onSnapshot(
+      doc(db, 'authorized_emails', emailDocId),
+      (snap) => {
+        if (!snap.exists()) {
+          setPermissions({
+            authorized: false,
+            isSuperAdmin: false,
+            role: 'staff',
+            allowBarcode: false,
+            allowSchedule: false,
+            allowExport: false,
+            allowSupabase: false,
+          });
+          setAccessDeactivated(false);
+          setAccessChecked(true);
+          return;
+        }
+
+        const data = snap.data();
+        const active = Boolean(data.active);
+        const role = (data.role as UserRole) || 'staff';
+        setAccessDeactivated(!active);
+        setPermissions({
+          authorized: active,
+          isSuperAdmin: false,
+          role,
+          allowBarcode: active && Boolean(data.allowBarcode),
+          allowSchedule: active && Boolean(data.allowSchedule),
+          allowExport: active && Boolean(data.allowExport),
+          allowSupabase: active && Boolean(data.allowSupabase),
+        });
+        setAccessChecked(true);
+      },
+      (error) => {
+        setAccessChecked(true);
+        handleFirestoreError(error, OperationType.GET, accessPath);
+      }
+    );
+
+    return () => unsub();
+  }, [user]);
+
+  const handleRecheckAccess = useCallback(async () => {
+    if (!user?.email) return;
+    setRecheckingAccess(true);
+    try {
+      const emailDocId = emailToKey(user.email);
+      const snap = await getDoc(doc(db, 'authorized_emails', emailDocId));
+      if (!snap.exists()) {
+        notify('info', 'Tài khoản vẫn chưa được quản trị viên thêm vào danh sách.');
+      } else if (!snap.data().active) {
+        notify('info', 'Tài khoản hiện đang tạm khóa.');
+      }
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.GET,
+        `authorized_emails/${emailToKey(user.email)}`
+      );
+    } finally {
+      setRecheckingAccess(false);
+    }
+  }, [user, notify]);
+
+  // Ensure activeTab stays on an allowed tab for the user's permissions
+  useEffect(() => {
+    if (!permissions.authorized) return;
+    const isAdmin = permissions.role === 'admin';
+    if (activeTab === 'scanner' && !permissions.allowBarcode) {
+      if (permissions.allowSchedule) setActiveTab('schedule');
+      else if (isAdmin) setActiveTab('access');
+      else setActiveTab('account');
+    } else if (activeTab === 'schedule' && !permissions.allowSchedule) {
+      if (permissions.allowBarcode) setActiveTab('scanner');
+      else if (isAdmin) setActiveTab('access');
+      else setActiveTab('account');
+    } else if (activeTab === 'access' && !isAdmin) {
+      if (permissions.allowBarcode) setActiveTab('scanner');
+      else if (permissions.allowSchedule) setActiveTab('schedule');
+      else setActiveTab('account');
+    }
+  }, [permissions, activeTab]);
+
   // Subscribe to user profile (for saved Supabase config)
   useEffect(() => {
     if (!user) return;
@@ -161,12 +311,61 @@ function MainApp() {
     return () => unsub();
   }, [user]);
 
-  // Subscribe to barcode_scans
+  // Subscribe to authorized_emails (Admin only)
   useEffect(() => {
-    if (!user) return;
+    if (!user || !permissions.authorized || permissions.role !== 'admin') {
+      setAuthorizedMembers([]);
+      return;
+    }
+    setMembersLoading(true);
+    const path = 'authorized_emails';
+    const unsub = onSnapshot(
+      collection(db, path),
+      (snapshot) => {
+        const list: AuthorizedEmail[] = snapshot.docs.map((d) => {
+          const data = d.data();
+          return {
+            id: d.id,
+            email: String(data.email || ''),
+            displayName: String(data.displayName || ''),
+            role: (data.role as UserRole) || 'staff',
+            allowBarcode: Boolean(data.allowBarcode),
+            allowSchedule: Boolean(data.allowSchedule),
+            allowExport: Boolean(data.allowExport),
+            allowSupabase: Boolean(data.allowSupabase),
+            active: Boolean(data.active),
+            note: String(data.note || ''),
+            grantedBy: String(data.grantedBy || ''),
+            createdAt: (data.createdAt as Timestamp) || null,
+            updatedAt: (data.updatedAt as Timestamp) || null,
+          };
+        });
+        list.sort((a, b) => a.email.localeCompare(b.email));
+        setAuthorizedMembers(list);
+        setMembersLoading(false);
+      },
+      (error) => {
+        setMembersLoading(false);
+        handleFirestoreError(error, OperationType.LIST, path);
+      }
+    );
+    return () => unsub();
+  }, [user, permissions.authorized, permissions.role]);
+
+  // Subscribe to barcode_scans (team-wide for admin/manager/viewer, owner-only for staff)
+  useEffect(() => {
+    if (!user || !permissions.authorized || !permissions.allowBarcode) {
+      setScans([]);
+      setScansLoading(false);
+      return;
+    }
     setScansLoading(true);
     const path = 'barcode_scans';
-    const q = query(collection(db, path), where('ownerId', '==', user.uid));
+    const isTeamView = permissions.role !== 'staff';
+    const q = isTeamView
+      ? collection(db, path)
+      : query(collection(db, path), where('ownerId', '==', user.uid));
+
     const unsub = onSnapshot(
       q,
       (snapshot) => {
@@ -200,14 +399,22 @@ function MainApp() {
       }
     );
     return () => unsub();
-  }, [user]);
+  }, [user, permissions.authorized, permissions.allowBarcode, permissions.role]);
 
-  // Subscribe to work_schedules
+  // Subscribe to work_schedules (team-wide for admin/manager/viewer, owner-only for staff)
   useEffect(() => {
-    if (!user) return;
+    if (!user || !permissions.authorized || !permissions.allowSchedule) {
+      setSchedules([]);
+      setSchedulesLoading(false);
+      return;
+    }
     setSchedulesLoading(true);
     const path = 'work_schedules';
-    const q = query(collection(db, path), where('ownerId', '==', user.uid));
+    const isTeamView = permissions.role !== 'staff';
+    const q = isTeamView
+      ? collection(db, path)
+      : query(collection(db, path), where('ownerId', '==', user.uid));
+
     const unsub = onSnapshot(
       q,
       (snapshot) => {
@@ -246,7 +453,134 @@ function MainApp() {
       }
     );
     return () => unsub();
-  }, [user]);
+  }, [user, permissions.authorized, permissions.allowSchedule, permissions.role]);
+
+  // Admin: Manage authorized_emails
+  const handleSaveAuthorizedMember = useCallback(
+    async (params: {
+      email: string;
+      displayName: string;
+      role: UserRole;
+      allowBarcode: boolean;
+      allowSchedule: boolean;
+      allowExport: boolean;
+      allowSupabase: boolean;
+      active: boolean;
+      note: string;
+      isEdit: boolean;
+    }) => {
+      if (!user?.email) return;
+      const cleanEmail = normalizeEmail(params.email);
+      if (cleanEmail === SUPER_ADMIN_EMAIL) {
+        notify('info', 'Tài khoản quản trị gốc luôn có toàn quyền.');
+        return;
+      }
+      const docId = emailToKey(cleanEmail);
+      const ref = doc(db, 'authorized_emails', docId);
+      const grantedBy = normalizeEmail(user.email);
+
+      try {
+        if (params.isEdit) {
+          await updateDoc(ref, {
+            displayName: params.displayName.slice(0, 120),
+            role: params.role,
+            allowBarcode: params.allowBarcode,
+            allowSchedule: params.allowSchedule,
+            allowExport: params.allowExport,
+            allowSupabase: params.allowSupabase,
+            active: params.active,
+            note: params.note.slice(0, 300),
+            grantedBy,
+            updatedAt: serverTimestamp(),
+          });
+          notify('success', `Đã cập nhật phân quyền cho ${cleanEmail}`);
+        } else {
+          const existing = await getDoc(ref);
+          if (existing.exists()) {
+            await updateDoc(ref, {
+              displayName: params.displayName.slice(0, 120),
+              role: params.role,
+              allowBarcode: params.allowBarcode,
+              allowSchedule: params.allowSchedule,
+              allowExport: params.allowExport,
+              allowSupabase: params.allowSupabase,
+              active: params.active,
+              note: params.note.slice(0, 300),
+              grantedBy,
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            await setDoc(ref, {
+              email: cleanEmail,
+              displayName: params.displayName.slice(0, 120),
+              role: params.role,
+              allowBarcode: params.allowBarcode,
+              allowSchedule: params.allowSchedule,
+              allowExport: params.allowExport,
+              allowSupabase: params.allowSupabase,
+              active: params.active,
+              note: params.note.slice(0, 300),
+              grantedBy,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+          notify('success', `Đã cấp quyền truy cập cho ${cleanEmail}`);
+        }
+      } catch (error) {
+        handleFirestoreError(
+          error,
+          params.isEdit ? OperationType.UPDATE : OperationType.CREATE,
+          `authorized_emails/${docId}`
+        );
+      }
+    },
+    [user, notify]
+  );
+
+  const handleToggleMemberActive = useCallback(
+    async (member: AuthorizedEmail) => {
+      if (!user?.email) return;
+      const ref = doc(db, 'authorized_emails', member.id);
+      try {
+        await updateDoc(ref, {
+          active: !member.active,
+          grantedBy: normalizeEmail(user.email),
+          updatedAt: serverTimestamp(),
+        });
+        notify(
+          'info',
+          !member.active
+            ? `Đã mở khóa quyền truy cập cho ${member.email}`
+            : `Đã tạm khóa quyền truy cập của ${member.email}`
+        );
+      } catch (error) {
+        handleFirestoreError(
+          error,
+          OperationType.UPDATE,
+          `authorized_emails/${member.id}`
+        );
+      }
+    },
+    [user, notify]
+  );
+
+  const handleDeleteMember = useCallback(
+    async (member: AuthorizedEmail) => {
+      const ref = doc(db, 'authorized_emails', member.id);
+      try {
+        await deleteDoc(ref);
+        notify('info', `Đã thu hồi quyền truy cập của ${member.email}`);
+      } catch (error) {
+        handleFirestoreError(
+          error,
+          OperationType.DELETE,
+          `authorized_emails/${member.id}`
+        );
+      }
+    },
+    [notify]
+  );
 
   // Barcode CRUD handlers
   const handleAddOrIncrementScan = useCallback(
@@ -263,7 +597,12 @@ function MainApp() {
 
       if (params.accumulate) {
         const existing = scans.find(
-          (s) => s.code === cleanCode && s.sessionName === cleanSession
+          (s) =>
+            s.code === cleanCode &&
+            s.sessionName === cleanSession &&
+            (s.ownerId === user.uid ||
+              permissions.role === 'admin' ||
+              permissions.role === 'manager')
         );
         if (existing) {
           const ref = doc(db, 'barcode_scans', existing.id);
@@ -274,7 +613,10 @@ function MainApp() {
               syncedToSupabase: false,
               updatedAt: serverTimestamp(),
             });
-            notify('success', `Đã cộng dồn ${cleanCode} (SL: ${existing.quantity + 1})`);
+            notify(
+              'success',
+              `Đã cộng dồn ${cleanCode} (SL: ${existing.quantity + 1})`
+            );
             return;
           } catch (error) {
             handleFirestoreError(
@@ -304,7 +646,7 @@ function MainApp() {
         handleFirestoreError(error, OperationType.CREATE, 'barcode_scans');
       }
     },
-    [user, scans, notify]
+    [user, scans, permissions.role, notify]
   );
 
   const handleUpdateScanQuantity = useCallback(
@@ -505,6 +847,7 @@ function MainApp() {
   );
 
   const handleSyncToSupabase = useCallback(async () => {
+    if (!permissions.allowSupabase) return;
     if (!supabaseReady) {
       setActiveTab('account');
       notify('info', 'Vui lòng nhập URL và Anon Key của Supabase trước.');
@@ -557,10 +900,10 @@ function MainApp() {
     } finally {
       setIsSyncing(false);
     }
-  }, [supabaseReady, supabaseConfig, scans, schedules, notify]);
+  }, [permissions.allowSupabase, supabaseReady, supabaseConfig, scans, schedules, notify]);
 
   const handlePullFromSupabase = useCallback(async () => {
-    if (!user || !user.email || !supabaseReady) return;
+    if (!user || !user.email || !supabaseReady || !permissions.allowSupabase) return;
     setIsSyncing(true);
     try {
       const res = await pullFromSupabase(supabaseConfig, user.email);
@@ -574,7 +917,11 @@ function MainApp() {
       let importedCount = 0;
 
       for (const s of res.scans) {
-        if (!s.id || existingScanIds.has(s.id) || !/^[a-zA-Z0-9_-]+$/.test(s.id)) {
+        if (
+          !s.id ||
+          existingScanIds.has(s.id) ||
+          !/^[a-zA-Z0-9_-]+$/.test(s.id)
+        ) {
           continue;
         }
         await setDoc(doc(db, 'barcode_scans', s.id), {
@@ -610,9 +957,13 @@ function MainApp() {
             w.employeeName.slice(0, 120) || user.displayName || user.email,
           title: w.title.slice(0, 150) || 'Ca làm việc',
           workDate: validWorkDate,
-          shiftType: ['morning', 'afternoon', 'evening', 'full_day', 'custom'].includes(
-            w.shiftType
-          )
+          shiftType: [
+            'morning',
+            'afternoon',
+            'evening',
+            'full_day',
+            'custom',
+          ].includes(w.shiftType)
             ? w.shiftType
             : 'custom',
           startTime: /^[0-9]{2}:[0-9]{2}$/.test(w.startTime)
@@ -622,9 +973,12 @@ function MainApp() {
             ? w.endTime
             : '17:00',
           location: w.location.slice(0, 150),
-          status: ['registered', 'confirmed', 'completed', 'cancelled'].includes(
-            w.status
-          )
+          status: [
+            'registered',
+            'confirmed',
+            'completed',
+            'cancelled',
+          ].includes(w.status)
             ? w.status
             : 'registered',
           note: w.note.slice(0, 400),
@@ -649,7 +1003,15 @@ function MainApp() {
     } finally {
       setIsSyncing(false);
     }
-  }, [user, supabaseReady, supabaseConfig, scans, schedules, notify]);
+  }, [
+    user,
+    supabaseReady,
+    permissions.allowSupabase,
+    supabaseConfig,
+    scans,
+    schedules,
+    notify,
+  ]);
 
   const unsyncedScansCount = useMemo(
     () => scans.filter((s) => !s.syncedToSupabase).length,
@@ -660,7 +1022,7 @@ function MainApp() {
     [schedules]
   );
 
-  if (!authReady) {
+  if (!authReady || (user && !accessChecked)) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
         <div className="text-center space-y-2">
@@ -668,7 +1030,7 @@ function MainApp() {
             <ScanBarcode className="h-5 w-5" />
           </div>
           <p className="text-sm font-medium text-slate-600">
-            Đang tải dữ liệu tài khoản...
+            Đang kiểm tra quyền truy cập tài khoản...
           </p>
         </div>
       </div>
@@ -679,8 +1041,22 @@ function MainApp() {
     return <SignInScreen />;
   }
 
+  if (!permissions.authorized) {
+    return (
+      <AccessPendingScreen
+        email={user.email || ''}
+        deactivated={accessDeactivated}
+        checking={recheckingAccess}
+        onRecheck={handleRecheckAccess}
+      />
+    );
+  }
+
   const displayName =
     user.displayName || user.email?.split('@')[0] || 'Thành viên';
+  const isAdmin = permissions.role === 'admin';
+  const isViewer = permissions.role === 'viewer';
+  const isTeamView = permissions.role !== 'staff';
 
   const tabMeta: Record<AppTab, { title: string; subtitle: string }> = {
     scanner: {
@@ -691,11 +1067,68 @@ function MainApp() {
       title: 'Lịch làm việc',
       subtitle: 'Đăng ký ca làm, theo dõi lịch tuần và cập nhật trạng thái',
     },
+    access: {
+      title: 'Phân quyền Gmail',
+      subtitle:
+        'Thêm email mới, phân vai trò và kiểm soát quyền truy cập từng chức năng',
+    },
     account: {
-      title: 'Tài khoản Gmail & Liên kết Supabase',
-      subtitle: 'Quản lý kết nối PostgreSQL Supabase và đồng bộ 2 chiều',
+      title: permissions.allowSupabase
+        ? 'Tài khoản Gmail & Liên kết Supabase'
+        : 'Thông tin tài khoản Gmail',
+      subtitle: permissions.allowSupabase
+        ? 'Quản lý kết nối PostgreSQL Supabase và đồng bộ 2 chiều'
+        : 'Xem vai trò và quyền truy cập hiện tại của bạn',
     },
   };
+
+  const navItems: {
+    id: AppTab;
+    label: string;
+    mobileLabel: string;
+    icon: typeof ScanBarcode;
+    badge?: string | number;
+    visible: boolean;
+  }[] = [
+    {
+      id: 'scanner',
+      label: 'Quét & Xuất mã vạch',
+      mobileLabel: 'Quét mã',
+      icon: ScanBarcode,
+      badge: scans.length,
+      visible: permissions.allowBarcode,
+    },
+    {
+      id: 'schedule',
+      label: 'Lịch làm việc',
+      mobileLabel: 'Lịch làm',
+      icon: CalendarDays,
+      badge: schedules.length,
+      visible: permissions.allowSchedule,
+    },
+    {
+      id: 'access',
+      label: 'Phân quyền Gmail',
+      mobileLabel: 'Phân quyền',
+      icon: ShieldCheck,
+      badge: authorizedMembers.length,
+      visible: isAdmin,
+    },
+    {
+      id: 'account',
+      label: permissions.allowSupabase ? 'Liên kết Supabase' : 'Tài khoản',
+      mobileLabel: permissions.allowSupabase ? 'Supabase' : 'Tài khoản',
+      icon: permissions.allowSupabase ? Database : UserCircle,
+      badge: permissions.allowSupabase
+        ? supabaseReady
+          ? 'Sẵn sàng'
+          : 'Chưa cài'
+        : undefined,
+      visible: true,
+    },
+  ];
+
+  const visibleNavItems = navItems.filter((item) => item.visible);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row">
@@ -711,63 +1144,38 @@ function MainApp() {
         </div>
 
         <nav className="flex-1 p-4 space-y-1.5" aria-label="Điều hướng chính">
-          <button
-            type="button"
-            onClick={() => setActiveTab('scanner')}
-            className={`w-full min-h-[46px] flex items-center justify-between px-3.5 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-              activeTab === 'scanner'
-                ? 'bg-blue-50 text-blue-700'
-                : 'text-slate-700 hover:bg-slate-100'
-            }`}
-          >
-            <span className="flex items-center gap-3">
-              <ScanBarcode className="h-5 w-5 shrink-0" />
-              <span>Quét &amp; Xuất mã vạch</span>
-            </span>
-            <span className="text-xs tabular-nums text-slate-500">
-              {scans.length}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('schedule')}
-            className={`w-full min-h-[46px] flex items-center justify-between px-3.5 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-              activeTab === 'schedule'
-                ? 'bg-blue-50 text-blue-700'
-                : 'text-slate-700 hover:bg-slate-100'
-            }`}
-          >
-            <span className="flex items-center gap-3">
-              <CalendarDays className="h-5 w-5 shrink-0" />
-              <span>Lịch làm việc</span>
-            </span>
-            <span className="text-xs tabular-nums text-slate-500">
-              {schedules.length}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('account')}
-            className={`w-full min-h-[46px] flex items-center justify-between px-3.5 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-              activeTab === 'account'
-                ? 'bg-blue-50 text-blue-700'
-                : 'text-slate-700 hover:bg-slate-100'
-            }`}
-          >
-            <span className="flex items-center gap-3">
-              <Database className="h-5 w-5 shrink-0" />
-              <span>Liên kết Supabase</span>
-            </span>
-            <span
-              className={`text-xs ${
-                supabaseReady ? 'text-emerald-700' : 'text-slate-400'
-              }`}
-            >
-              {supabaseReady ? 'Sẵn sàng' : 'Chưa cài'}
-            </span>
-          </button>
+          {visibleNavItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className={`w-full min-h-[46px] flex items-center justify-between px-3.5 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                  isActive
+                    ? 'bg-blue-50 text-blue-700'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <span className="flex items-center gap-3">
+                  <Icon className="h-5 w-5 shrink-0" />
+                  <span>{item.label}</span>
+                </span>
+                {item.badge !== undefined && (
+                  <span
+                    className={`text-xs tabular-nums ${
+                      item.id === 'account' && supabaseReady
+                        ? 'text-emerald-700'
+                        : 'text-slate-500'
+                    }`}
+                  >
+                    {item.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </nav>
 
         {/* User profile in sidebar footer */}
@@ -789,7 +1197,9 @@ function MainApp() {
               <p className="text-sm font-bold text-slate-900 truncate">
                 {displayName}
               </p>
-              <p className="text-xs text-slate-500 truncate">{user.email}</p>
+              <p className="text-xs text-slate-500 truncate">
+                {ROLE_LABELS[permissions.role]} · {user.email}
+              </p>
             </div>
           </div>
 
@@ -820,7 +1230,7 @@ function MainApp() {
             type="button"
             onClick={() => setActiveTab('account')}
             className="min-h-[44px] min-w-[44px] flex items-center justify-end shrink-0"
-            aria-label="Mở tài khoản và Supabase"
+            aria-label="Mở thông tin tài khoản"
           >
             {user.photoURL ? (
               <img
@@ -847,22 +1257,24 @@ function MainApp() {
 
           <div className="flex items-center gap-4 shrink-0">
             <span className="text-sm text-slate-500 whitespace-nowrap">
-              {user.email}
+              {ROLE_LABELS[permissions.role]} · {user.email}
             </span>
-            <button
-              type="button"
-              onClick={() => setActiveTab('account')}
-              className="min-h-[40px] inline-flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap"
-            >
-              <Database
-                className={`h-4 w-4 ${
-                  supabaseReady ? 'text-emerald-600' : 'text-slate-400'
-                }`}
-              />
-              <span>
-                {supabaseReady ? 'Supabase: Đã liên kết' : 'Cài đặt Supabase'}
-              </span>
-            </button>
+            {permissions.allowSupabase && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('account')}
+                className="min-h-[40px] inline-flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap"
+              >
+                <Database
+                  className={`h-4 w-4 ${
+                    supabaseReady ? 'text-emerald-600' : 'text-slate-400'
+                  }`}
+                />
+                <span>
+                  {supabaseReady ? 'Supabase: Đã liên kết' : 'Cài đặt Supabase'}
+                </span>
+              </button>
+            )}
           </div>
         </header>
 
@@ -872,10 +1284,14 @@ function MainApp() {
             {tabMeta[activeTab].subtitle}
           </p>
 
-          {activeTab === 'scanner' && (
+          {activeTab === 'scanner' && permissions.allowBarcode && (
             <BarcodeScannerTab
               scans={scans}
               loading={scansLoading}
+              canEdit={!isViewer}
+              canExport={permissions.allowExport}
+              canSupabase={permissions.allowSupabase}
+              showOwnerEmail={isTeamView}
               supabaseReady={supabaseReady}
               isSyncing={isSyncing}
               onAddOrIncrementScan={handleAddOrIncrementScan}
@@ -888,17 +1304,34 @@ function MainApp() {
             />
           )}
 
-          {activeTab === 'schedule' && (
+          {activeTab === 'schedule' && permissions.allowSchedule && (
             <WorkScheduleTab
               schedules={schedules}
               loading={schedulesLoading}
               defaultEmployeeName={displayName}
+              canEdit={!isViewer}
+              canExport={permissions.allowExport}
+              canSupabase={permissions.allowSupabase}
+              showOwnerEmail={isTeamView}
+              isAdmin={isAdmin}
               supabaseReady={supabaseReady}
               isSyncing={isSyncing}
               onCreateSchedule={handleCreateSchedule}
               onUpdateSchedule={handleUpdateSchedule}
               onDeleteSchedule={handleDeleteSchedule}
               onSyncToSupabase={handleSyncToSupabase}
+              onNotify={notify}
+            />
+          )}
+
+          {activeTab === 'access' && isAdmin && (
+            <AccessControlTab
+              members={authorizedMembers}
+              loading={membersLoading}
+              currentUserEmail={user.email || ''}
+              onSaveMember={handleSaveAuthorizedMember}
+              onToggleActive={handleToggleMemberActive}
+              onDeleteMember={handleDeleteMember}
               onNotify={notify}
             />
           )}
@@ -925,7 +1358,19 @@ function MainApp() {
                       {displayName}
                     </h2>
                     <p className="text-sm text-slate-600 truncate">
-                      {user.email} <span aria-hidden="true">·</span> Đã xác thực Gmail
+                      {user.email} <span aria-hidden="true">·</span>{' '}
+                      {ROLE_LABELS[permissions.role]}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Quyền hiện có:{' '}
+                      {[
+                        permissions.allowBarcode ? 'Quét mã vạch' : null,
+                        permissions.allowSchedule ? 'Lịch làm việc' : null,
+                        permissions.allowExport ? 'Xuất Excel' : null,
+                        permissions.allowSupabase ? 'Supabase' : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ') || 'Cơ bản'}
                     </p>
                   </div>
                 </div>
@@ -940,15 +1385,17 @@ function MainApp() {
                 </button>
               </div>
 
-              <SupabasePanel
-                config={supabaseConfig}
-                unsyncedScansCount={unsyncedScansCount}
-                unsyncedSchedulesCount={unsyncedSchedulesCount}
-                isSyncing={isSyncing}
-                onSaveConfig={handleSaveSupabaseConfig}
-                onSyncAll={handleSyncToSupabase}
-                onPullFromSupabase={handlePullFromSupabase}
-              />
+              {permissions.allowSupabase && (
+                <SupabasePanel
+                  config={supabaseConfig}
+                  unsyncedScansCount={unsyncedScansCount}
+                  unsyncedSchedulesCount={unsyncedSchedulesCount}
+                  isSyncing={isSyncing}
+                  onSaveConfig={handleSaveSupabaseConfig}
+                  onSyncAll={handleSyncToSupabase}
+                  onPullFromSupabase={handlePullFromSupabase}
+                />
+              )}
             </div>
           )}
         </main>
@@ -959,39 +1406,36 @@ function MainApp() {
         className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-xs border-t border-slate-200 pb-safe"
         aria-label="Điều hướng di động"
       >
-        <div className="grid grid-cols-3 h-16">
-          <button
-            type="button"
-            onClick={() => setActiveTab('scanner')}
-            className={`flex flex-col items-center justify-center gap-1 text-xs font-medium transition-colors ${
-              activeTab === 'scanner' ? 'text-blue-600' : 'text-slate-500'
-            }`}
-          >
-            <ScanBarcode className="h-5 w-5" />
-            <span>Quét mã vạch</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('schedule')}
-            className={`flex flex-col items-center justify-center gap-1 text-xs font-medium transition-colors ${
-              activeTab === 'schedule' ? 'text-blue-600' : 'text-slate-500'
-            }`}
-          >
-            <CalendarDays className="h-5 w-5" />
-            <span>Lịch làm việc</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('account')}
-            className={`flex flex-col items-center justify-center gap-1 text-xs font-medium transition-colors ${
-              activeTab === 'account' ? 'text-blue-600' : 'text-slate-500'
-            }`}
-          >
-            <Database className="h-5 w-5" />
-            <span>Supabase</span>
-          </button>
+        <div
+          className={`grid h-16 ${
+            visibleNavItems.length === 1
+              ? 'grid-cols-1'
+              : visibleNavItems.length === 2
+                ? 'grid-cols-2'
+                : visibleNavItems.length === 3
+                  ? 'grid-cols-3'
+                  : 'grid-cols-4'
+          }`}
+        >
+          {visibleNavItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className={`flex flex-col items-center justify-center gap-1 text-xs font-medium transition-colors ${
+                  isActive ? 'text-blue-600' : 'text-slate-500'
+                }`}
+              >
+                <Icon className="h-5 w-5" />
+                <span className="truncate max-w-full px-1">
+                  {item.mobileLabel}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </nav>
 

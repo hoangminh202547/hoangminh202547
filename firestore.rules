@@ -26,11 +26,55 @@ service cloud.firestore {
     }
 
     function isVerified() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+      return isSignedIn() && request.auth.token.email_verified == true && request.auth.token.email is string;
     }
 
     function isOwner(uid) {
       return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function emailToKey(email) {
+      return email.lower().replace('@', '_at_').replace('[.]', '_dot_').replace('[^a-z0-9_\\-]', '_');
+    }
+
+    function authEmailKey() {
+      return emailToKey(request.auth.token.email);
+    }
+
+    function isSuperAdmin() {
+      return isVerified() && request.auth.token.email.lower() == 'hoangminh202547@gmail.com';
+    }
+
+    function hasAccessDoc() {
+      return isVerified() && exists(/databases/$(database)/documents/authorized_emails/$(authEmailKey()));
+    }
+
+    function accessData() {
+      return get(/databases/$(database)/documents/authorized_emails/$(authEmailKey())).data;
+    }
+
+    function isAuthorizedUser() {
+      return isSuperAdmin() || (hasAccessDoc() && accessData().active == true);
+    }
+
+    function isAdmin() {
+      return isSuperAdmin() || (hasAccessDoc() && accessData().active == true && accessData().role == 'admin');
+    }
+
+    function isManagerOrAdmin() {
+      return isSuperAdmin() || (hasAccessDoc() && accessData().active == true && accessData().role in ['admin', 'manager']);
+    }
+
+    function isViewer() {
+      return hasAccessDoc() && accessData().active == true && accessData().role == 'viewer';
+    }
+
+    function canUseBarcode() {
+      return isSuperAdmin() || (isAuthorizedUser() && accessData().allowBarcode == true && accessData().role != 'viewer');
+    }
+
+    function canUseSchedule() {
+      return isSuperAdmin() || (isAuthorizedUser() && accessData().allowSchedule == true && accessData().role != 'viewer');
     }
 
     // Validation blueprint: UserProfile
@@ -41,7 +85,7 @@ service cloud.firestore {
         && data.uid == request.auth.uid
         && isValidId(data.uid)
         && data.email is string
-        && data.email == request.auth.token.email
+        && data.email.lower() == request.auth.token.email.lower()
         && data.email.size() >= 3
         && data.email.size() <= 254
         && data.displayName is string
@@ -50,6 +94,43 @@ service cloud.firestore {
         && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500))
         && (!('supabaseUrl' in data) || (data.supabaseUrl is string && data.supabaseUrl.size() <= 300))
         && (!('supabaseAnonKey' in data) || (data.supabaseAnonKey is string && data.supabaseAnonKey.size() <= 500))
+        && data.updatedAt is timestamp
+        && data.updatedAt == request.time;
+    }
+
+    // Validation blueprint: AuthorizedEmail
+    function isValidAuthorizedEmail(data, emailId) {
+      return data.keys().hasAll([
+          'email', 'displayName', 'role', 'allowBarcode', 'allowSchedule',
+          'allowExport', 'allowSupabase', 'active', 'note', 'grantedBy',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'email', 'displayName', 'role', 'allowBarcode', 'allowSchedule',
+          'allowExport', 'allowSupabase', 'active', 'note', 'grantedBy',
+          'createdAt', 'updatedAt'
+        ])
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 254
+        && data.email == data.email.lower()
+        && emailToKey(data.email) == emailId
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 120
+        && data.role is string
+        && data.role in ['admin', 'manager', 'staff', 'viewer']
+        && data.allowBarcode is bool
+        && data.allowSchedule is bool
+        && data.allowExport is bool
+        && data.allowSupabase is bool
+        && data.active is bool
+        && data.note is string
+        && data.note.size() <= 300
+        && data.grantedBy is string
+        && data.grantedBy.size() >= 3
+        && data.grantedBy.size() <= 254
+        && data.createdAt is timestamp
         && data.updatedAt is timestamp
         && data.updatedAt == request.time;
     }
@@ -65,10 +146,8 @@ service cloud.firestore {
           'quantity', 'note', 'syncedToSupabase', 'scannedAt', 'updatedAt'
         ])
         && data.ownerId is string
-        && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && data.ownerEmail is string
-        && data.ownerEmail == request.auth.token.email
         && data.ownerEmail.size() >= 3
         && data.ownerEmail.size() <= 254
         && data.code is string
@@ -104,10 +183,8 @@ service cloud.firestore {
           'note', 'syncedToSupabase', 'createdAt', 'updatedAt'
         ])
         && data.ownerId is string
-        && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && data.ownerEmail is string
-        && data.ownerEmail == request.auth.token.email
         && data.ownerEmail.size() >= 3
         && data.ownerEmail.size() <= 254
         && data.employeeName is string
@@ -155,14 +232,43 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Authorized Emails RBAC collection
+    match /authorized_emails/{emailId} {
+      allow get: if isValidId(emailId) && (
+        isAdmin() || (isVerified() && emailId == authEmailKey())
+      );
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(emailId)
+        && isValidAuthorizedEmail(incoming(), emailId)
+        && incoming().createdAt == request.time;
+      allow update: if isAdmin() && isValidId(emailId)
+        && isValidAuthorizedEmail(incoming(), emailId)
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().email != 'hoangminh202547@gmail.com'
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'role', 'allowBarcode', 'allowSchedule',
+          'allowExport', 'allowSupabase', 'active', 'note', 'grantedBy', 'updatedAt'
+        ]);
+      allow delete: if isAdmin() && isValidId(emailId)
+        && existing().email != 'hoangminh202547@gmail.com';
+    }
+
     // Barcode Scans collection
     match /barcode_scans/{scanId} {
-      allow get: if isValidId(scanId) && isOwner(existing().ownerId);
-      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
-      allow create: if isVerified() && isValidId(scanId)
+      allow get: if isValidId(scanId) && isAuthorizedUser() && (
+        existing().ownerId == request.auth.uid || isManagerOrAdmin() || isViewer()
+      );
+      allow list: if isAuthorizedUser() && (
+        existing().ownerId == request.auth.uid || isManagerOrAdmin() || isViewer()
+      );
+      allow create: if canUseBarcode() && isValidId(scanId)
         && isValidBarcodeScan(incoming())
+        && incoming().ownerId == request.auth.uid
+        && incoming().ownerEmail.lower() == request.auth.token.email.lower()
         && incoming().scannedAt == request.time;
-      allow update: if isVerified() && isValidId(scanId) && isOwner(existing().ownerId)
+      allow update: if canUseBarcode() && isValidId(scanId)
+        && (existing().ownerId == request.auth.uid || isManagerOrAdmin())
         && isValidBarcodeScan(incoming())
         && incoming().ownerId == existing().ownerId
         && incoming().ownerEmail == existing().ownerEmail
@@ -173,18 +279,26 @@ service cloud.firestore {
           ]) ||
           incoming().diff(existing()).affectedKeys().hasOnly(['syncedToSupabase', 'updatedAt'])
         );
-      allow delete: if isVerified() && isValidId(scanId) && isOwner(existing().ownerId);
+      allow delete: if canUseBarcode() && isValidId(scanId)
+        && (existing().ownerId == request.auth.uid || isManagerOrAdmin());
     }
 
     // Work Schedules collection
     match /work_schedules/{scheduleId} {
-      allow get: if isValidId(scheduleId) && isOwner(existing().ownerId);
-      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
-      allow create: if isVerified() && isValidId(scheduleId)
+      allow get: if isValidId(scheduleId) && isAuthorizedUser() && (
+        existing().ownerId == request.auth.uid || isManagerOrAdmin() || isViewer()
+      );
+      allow list: if isAuthorizedUser() && (
+        existing().ownerId == request.auth.uid || isManagerOrAdmin() || isViewer()
+      );
+      allow create: if canUseSchedule() && isValidId(scheduleId)
         && isValidWorkSchedule(incoming())
+        && incoming().ownerId == request.auth.uid
+        && incoming().ownerEmail.lower() == request.auth.token.email.lower()
         && incoming().createdAt == request.time;
-      allow update: if isVerified() && isValidId(scheduleId) && isOwner(existing().ownerId)
-        && existing().status != 'cancelled'
+      allow update: if canUseSchedule() && isValidId(scheduleId)
+        && (existing().ownerId == request.auth.uid || isManagerOrAdmin())
+        && (existing().status != 'cancelled' || isAdmin())
         && isValidWorkSchedule(incoming())
         && incoming().ownerId == existing().ownerId
         && incoming().ownerEmail == existing().ownerEmail
@@ -196,7 +310,8 @@ service cloud.firestore {
           ]) ||
           incoming().diff(existing()).affectedKeys().hasOnly(['syncedToSupabase', 'updatedAt'])
         );
-      allow delete: if isVerified() && isValidId(scheduleId) && isOwner(existing().ownerId);
+      allow delete: if canUseSchedule() && isValidId(scheduleId)
+        && (existing().ownerId == request.auth.uid || isManagerOrAdmin());
     }
   }
 }

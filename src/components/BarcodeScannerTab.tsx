@@ -21,6 +21,10 @@ import { ConfirmDialog } from './ConfirmDialog';
 interface BarcodeScannerTabProps {
   scans: BarcodeScan[];
   loading: boolean;
+  canEdit: boolean;
+  canExport: boolean;
+  canSupabase: boolean;
+  showOwnerEmail: boolean;
   supabaseReady: boolean;
   isSyncing: boolean;
   onAddOrIncrementScan: (params: {
@@ -80,6 +84,10 @@ function playScanBeep() {
 export function BarcodeScannerTab({
   scans,
   loading,
+  canEdit,
+  canExport,
+  canSupabase,
+  showOwnerEmail,
   supabaseReady,
   isSyncing,
   onAddOrIncrementScan,
@@ -382,10 +390,11 @@ export function BarcodeScannerTab({
         </div>
       </div>
 
-      {/* Scanner + Manual/USB Input Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-        {/* Camera Continuous Scanner */}
-        <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between">
+      {/* Scanner + Manual/USB Input Grid (hidden in read-only viewer mode) */}
+      {canEdit ? (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+          {/* Camera Continuous Scanner */}
+          <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between">
           <div>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -624,10 +633,15 @@ export function BarcodeScannerTab({
                 <Plus className="h-4 w-4" />
                 <span>Lưu mã vạch vào danh sách</span>
               </button>
-            </form>
+              </form>
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="bg-white border border-slate-200 rounded-xl p-4 text-sm text-slate-600">
+          Tài khoản của bạn đang ở chế độ <strong>Chỉ xem</strong>. Bạn có thể tìm kiếm và xuất báo cáo Excel mã vạch bên dưới.
+        </div>
+      )}
 
       {/* Stored Barcodes List + Export Excel Toolbar */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -660,7 +674,7 @@ export function BarcodeScannerTab({
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            {supabaseReady && (
+            {canSupabase && supabaseReady && (
               <button
                 type="button"
                 onClick={onSyncToSupabase}
@@ -676,7 +690,7 @@ export function BarcodeScannerTab({
               </button>
             )}
 
-            {filteredScans.length > 0 && (
+            {canEdit && filteredScans.length > 0 && (
               <button
                 type="button"
                 onClick={() => setClearSessionConfirm(true)}
@@ -687,15 +701,17 @@ export function BarcodeScannerTab({
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={handleExportExcel}
-              disabled={filteredScans.length === 0}
-              className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 disabled:opacity-40 transition-colors whitespace-nowrap"
-            >
-              <FileSpreadsheet className="h-4 w-4" />
-              <span>Xuất Excel (.xlsx)</span>
-            </button>
+            {canExport && (
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                disabled={filteredScans.length === 0}
+                className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 disabled:opacity-40 transition-colors whitespace-nowrap"
+              >
+                <FileSpreadsheet className="h-4 w-4" />
+                <span>Xuất Excel (.xlsx)</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -745,6 +761,7 @@ export function BarcodeScannerTab({
                           {scan.code}
                         </div>
                         <div className="text-xs text-slate-500 mt-0.5">
+                          {showOwnerEmail ? `${scan.ownerEmail} · ` : ''}
                           {scan.syncedToSupabase
                             ? 'Đã đồng bộ Supabase'
                             : 'Lưu trên đám mây'}
@@ -757,33 +774,39 @@ export function BarcodeScannerTab({
                         </div>
                       </td>
                       <td className="py-3 px-4">
-                        <div className="flex items-center justify-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onUpdateQuantity(scan, Math.max(1, scan.quantity - 1))
-                            }
-                            disabled={scan.quantity <= 1}
-                            className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
-                            aria-label="Giảm số lượng"
-                          >
-                            <Minus className="h-3.5 w-3.5" />
-                          </button>
-                          <span className="min-w-[36px] text-center font-bold text-slate-900 tabular-nums">
+                        {canEdit ? (
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onUpdateQuantity(scan, Math.max(1, scan.quantity - 1))
+                              }
+                              disabled={scan.quantity <= 1}
+                              className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+                              aria-label="Giảm số lượng"
+                            >
+                              <Minus className="h-3.5 w-3.5" />
+                            </button>
+                            <span className="min-w-[36px] text-center font-bold text-slate-900 tabular-nums">
+                              {scan.quantity}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => onUpdateQuantity(scan, scan.quantity + 1)}
+                              className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 text-slate-700 hover:bg-slate-100"
+                              aria-label="Tăng số lượng"
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="text-center font-bold text-slate-900 tabular-nums">
                             {scan.quantity}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => onUpdateQuantity(scan, scan.quantity + 1)}
-                            className="h-9 w-9 flex items-center justify-center rounded-md border border-slate-200 text-slate-700 hover:bg-slate-100"
-                            aria-label="Tăng số lượng"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 px-4 max-w-[220px]">
-                        {editingNoteId === scan.id ? (
+                        {canEdit && editingNoteId === scan.id ? (
                           <div className="flex items-center gap-1.5">
                             <input
                               type="text"
@@ -804,7 +827,7 @@ export function BarcodeScannerTab({
                               Lưu
                             </button>
                           </div>
-                        ) : (
+                        ) : canEdit ? (
                           <button
                             type="button"
                             onClick={() => {
@@ -815,20 +838,26 @@ export function BarcodeScannerTab({
                           >
                             {scan.note ? scan.note : 'Thêm ghi chú...'}
                           </button>
+                        ) : (
+                          <span className="text-slate-600 truncate block">
+                            {scan.note || '—'}
+                          </span>
                         )}
                       </td>
                       <td className="py-3 px-4 text-slate-500 tabular-nums whitespace-nowrap">
                         {formatTime(scan)}
                       </td>
                       <td className="py-3 px-4 text-right">
-                        <button
-                          type="button"
-                          onClick={() => setDeleteTarget(scan)}
-                          className="h-9 w-9 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
-                          aria-label={`Xóa mã ${scan.code}`}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                        {canEdit && (
+                          <button
+                            type="button"
+                            onClick={() => setDeleteTarget(scan)}
+                            className="h-9 w-9 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                            aria-label={`Xóa mã ${scan.code}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -850,21 +879,24 @@ export function BarcodeScannerTab({
                         <span className="font-mono">{scan.format}</span>{' '}
                         <span aria-hidden="true">·</span>{' '}
                         <span className="tabular-nums">{formatTime(scan)}</span>
+                        {showOwnerEmail ? ` · ${scan.ownerEmail}` : ''}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setDeleteTarget(scan)}
-                      className="min-h-[44px] min-w-[44px] -mr-2 -mt-2 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600"
-                      aria-label={`Xóa mã ${scan.code}`}
-                    >
-                      <Trash2 className="h-5 w-5" />
-                    </button>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(scan)}
+                        className="min-h-[44px] min-w-[44px] -mr-2 -mt-2 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600"
+                        aria-label={`Xóa mã ${scan.code}`}
+                      >
+                        <Trash2 className="h-5 w-5" />
+                      </button>
+                    )}
                   </div>
 
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex-1 min-w-0">
-                      {editingNoteId === scan.id ? (
+                      {canEdit && editingNoteId === scan.id ? (
                         <div className="flex items-center gap-2">
                           <input
                             type="text"
@@ -881,7 +913,7 @@ export function BarcodeScannerTab({
                             Lưu
                           </button>
                         </div>
-                      ) : (
+                      ) : canEdit ? (
                         <button
                           type="button"
                           onClick={() => {
@@ -892,33 +924,43 @@ export function BarcodeScannerTab({
                         >
                           {scan.note ? scan.note : 'Chạm để thêm ghi chú...'}
                         </button>
+                      ) : (
+                        <span className="text-sm text-slate-600 truncate block">
+                          {scan.note || '—'}
+                        </span>
                       )}
                     </div>
 
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onUpdateQuantity(scan, Math.max(1, scan.quantity - 1))
-                        }
-                        disabled={scan.quantity <= 1}
-                        className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-slate-200 text-slate-700 disabled:opacity-40"
-                        aria-label="Giảm số lượng"
-                      >
-                        <Minus className="h-4 w-4" />
-                      </button>
-                      <span className="min-w-[36px] text-center text-base font-bold text-slate-900 tabular-nums">
-                        {scan.quantity}
+                    {canEdit ? (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdateQuantity(scan, Math.max(1, scan.quantity - 1))
+                          }
+                          disabled={scan.quantity <= 1}
+                          className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-slate-200 text-slate-700 disabled:opacity-40"
+                          aria-label="Giảm số lượng"
+                        >
+                          <Minus className="h-4 w-4" />
+                        </button>
+                        <span className="min-w-[36px] text-center text-base font-bold text-slate-900 tabular-nums">
+                          {scan.quantity}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onUpdateQuantity(scan, scan.quantity + 1)}
+                          className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-slate-200 text-slate-700"
+                          aria-label="Tăng số lượng"
+                        >
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-base font-bold text-slate-900 tabular-nums">
+                        SL: {scan.quantity}
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => onUpdateQuantity(scan, scan.quantity + 1)}
-                        className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-slate-200 text-slate-700"
-                        aria-label="Tăng số lượng"
-                      >
-                        <Plus className="h-4 w-4" />
-                      </button>
-                    </div>
+                    )}
                   </div>
                 </div>
               ))}

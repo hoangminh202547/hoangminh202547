@@ -1,6 +1,8 @@
 import type { Timestamp } from 'firebase/firestore';
 
-export type AppTab = 'scanner' | 'schedule' | 'account';
+export type AppTab = 'scanner' | 'schedule' | 'access' | 'account';
+
+export type UserRole = 'admin' | 'manager' | 'staff' | 'viewer';
 
 export type ShiftType = 'morning' | 'afternoon' | 'evening' | 'full_day' | 'custom';
 
@@ -9,6 +11,32 @@ export type ScheduleStatus = 'registered' | 'confirmed' | 'completed' | 'cancell
 export interface SupabaseConfig {
   url: string;
   anonKey: string;
+}
+
+export interface AuthorizedEmail {
+  id: string;
+  email: string;
+  displayName: string;
+  role: UserRole;
+  allowBarcode: boolean;
+  allowSchedule: boolean;
+  allowExport: boolean;
+  allowSupabase: boolean;
+  active: boolean;
+  note: string;
+  grantedBy: string;
+  createdAt: Timestamp | null;
+  updatedAt: Timestamp | null;
+}
+
+export interface EffectivePermissions {
+  authorized: boolean;
+  isSuperAdmin: boolean;
+  role: UserRole;
+  allowBarcode: boolean;
+  allowSchedule: boolean;
+  allowExport: boolean;
+  allowSupabase: boolean;
 }
 
 export interface UserProfile {
