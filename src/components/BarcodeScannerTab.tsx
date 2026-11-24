@@ -21,7 +21,9 @@ import { ConfirmDialog } from './ConfirmDialog';
 interface BarcodeScannerTabProps {
   scans: BarcodeScan[];
   loading: boolean;
+  canCreate: boolean;
   canEdit: boolean;
+  canDelete: boolean;
   canExport: boolean;
   canSupabase: boolean;
   showOwnerEmail: boolean;
@@ -39,6 +41,7 @@ interface BarcodeScannerTabProps {
   onDeleteScan: (scan: BarcodeScan) => Promise<void>;
   onClearSession: (sessionName: string, items: BarcodeScan[]) => Promise<void>;
   onSyncToSupabase: () => Promise<void>;
+  onExportLogged?: (fileName: string, count: number) => void;
   onNotify: (type: 'success' | 'error' | 'info', message: string) => void;
 }
 
@@ -84,7 +87,9 @@ function playScanBeep() {
 export function BarcodeScannerTab({
   scans,
   loading,
+  canCreate,
   canEdit,
+  canDelete,
   canExport,
   canSupabase,
   showOwnerEmail,
@@ -96,6 +101,7 @@ export function BarcodeScannerTab({
   onDeleteScan,
   onClearSession,
   onSyncToSupabase,
+  onExportLogged,
   onNotify,
 }: BarcodeScannerTabProps) {
   const defaultSessionName = useMemo(() => {
@@ -209,7 +215,11 @@ export function BarcodeScannerTab({
       } catch (err) {
         onNotify(
           'error',
-          err instanceof Error ? err.message : 'Không thể lưu mã vạch.'
+          err instanceof Error
+            ? err.message
+            : typeof err === 'string' && err.trim()
+              ? err
+              : 'Không thể lưu mã vạch.'
         );
       }
     },
@@ -254,16 +264,21 @@ export function BarcodeScannerTab({
 
       setIsScanning(true);
     } catch (err) {
-      const msg =
+      const rawMsg =
         err instanceof Error
           ? err.message
-          : 'Không thể khởi động camera. Vui lòng kiểm tra quyền truy cập camera.';
-      if (msg.toLowerCase().includes('permission')) {
+          : typeof err === 'string' && err.trim()
+            ? err
+            : 'Không thể khởi động camera. Vui lòng kiểm tra quyền truy cập camera.';
+      if (
+        rawMsg.toLowerCase().includes('permission') ||
+        rawMsg.toLowerCase().includes('notallowederror')
+      ) {
         setCameraError(
           'Trình duyệt chưa cấp quyền Camera. Vui lòng cấp quyền hoặc dùng chế độ nhập tay / súng quét USB bên cạnh.'
         );
       } else {
-        setCameraError(msg);
+        setCameraError(rawMsg);
       }
       setIsScanning(false);
     } finally {
@@ -296,7 +311,11 @@ export function BarcodeScannerTab({
     } catch (err) {
       onNotify(
         'error',
-        err instanceof Error ? err.message : 'Không thể lưu mã vạch.'
+        err instanceof Error
+          ? err.message
+          : typeof err === 'string' && err.trim()
+            ? err
+            : 'Không thể lưu mã vạch.'
       );
     }
   };
@@ -340,6 +359,9 @@ export function BarcodeScannerTab({
     }
     const label = sessionFilter === 'ALL' ? 'TatCa' : sessionFilter;
     const fileName = await exportBarcodesToExcel(filteredScans, label);
+    if (onExportLogged) {
+      onExportLogged(fileName, filteredScans.length);
+    }
     onNotify('success', `Đã xuất file Excel: ${fileName}`);
   };
 
@@ -351,13 +373,15 @@ export function BarcodeScannerTab({
 
   const formatTime = (scan: BarcodeScan) => {
     if (!scan.scannedAt) return 'Vừa xong';
+    const d = new Date(scan.scannedAt);
+    if (Number.isNaN(d.getTime())) return 'Vừa xong';
     return new Intl.DateTimeFormat('vi-VN', {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
       day: '2-digit',
       month: '2-digit',
-    }).format(scan.scannedAt.toDate());
+    }).format(d);
   };
 
   return (
@@ -383,263 +407,263 @@ export function BarcodeScannerTab({
           </p>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <p className="text-xs font-medium text-slate-500">Chờ đồng bộ Supabase</p>
+          <p className="text-xs font-medium text-slate-500">Chưa đồng bộ</p>
           <p className="mt-1 text-2xl font-bold text-slate-900 tabular-nums">
             {unsyncedCount}
           </p>
         </div>
       </div>
 
-      {/* Scanner + Manual/USB Input Grid (hidden in read-only viewer mode) */}
-      {canEdit ? (
+      {/* Scanner + Manual/USB Input Grid */}
+      {canCreate ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
           {/* Camera Continuous Scanner */}
           <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between">
-          <div>
-            <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900">
+                    Quét mã vạch liên tục bằng Camera
+                  </h2>
+                  <p className="text-sm text-slate-600 mt-0.5">
+                    Đưa mã vạch EAN-13, Code-128 hoặc QR vào khung ngắm để tự động ghi nhận.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSoundEnabled((v) => !v)}
+                  className="min-h-[44px] inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap"
+                  aria-label={soundEnabled ? 'Tắt âm báo quét' : 'Bật âm báo quét'}
+                >
+                  {soundEnabled ? (
+                    <>
+                      <Volume2 className="h-4 w-4 text-blue-600" />
+                      <span>Âm báo: Bật</span>
+                    </>
+                  ) : (
+                    <>
+                      <VolumeX className="h-4 w-4 text-slate-400" />
+                      <span>Âm báo: Tắt</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Camera viewport */}
+              <div
+                className={`mt-4 relative rounded-xl overflow-hidden bg-slate-900 aspect-video max-h-[320px] w-full flex items-center justify-center border-2 transition-colors ${
+                  lastScannedFlash ? 'border-emerald-500' : 'border-slate-200'
+                }`}
+              >
+                <div id="barcode-reader" className="w-full h-full" />
+
+                {!isScanning && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-900 text-white">
+                    <Camera className="h-10 w-10 text-slate-400 mb-3" />
+                    <p className="text-base font-medium">
+                      Camera đang tạm dừng
+                    </p>
+                    <p className="text-sm text-slate-400 mt-1 max-w-sm">
+                      Nhấn &quot;Bắt đầu quét&quot; để mở camera sau trên điện thoại hoặc webcam trên máy tính.
+                    </p>
+                  </div>
+                )}
+
+                {lastScannedFlash && (
+                  <div className="absolute bottom-3 left-3 right-3 bg-emerald-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium flex items-center justify-between shadow-lg">
+                    <span className="truncate">
+                      Đã ghi nhận: <span className="font-mono">{lastScannedFlash}</span>
+                    </span>
+                    <Check className="h-4 w-4 shrink-0 ml-2" />
+                  </div>
+                )}
+              </div>
+
+              {cameraError && (
+                <div
+                  role="alert"
+                  className="mt-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900"
+                >
+                  {cameraError}
+                </div>
+              )}
+            </div>
+
+            {/* Camera controls */}
+            <div className="mt-4 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2.5">
+                {!isScanning ? (
+                  <button
+                    type="button"
+                    onClick={startCamera}
+                    disabled={startingCamera}
+                    className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors whitespace-nowrap"
+                  >
+                    <Camera className="h-4 w-4" />
+                    <span>{startingCamera ? 'Đang mở camera...' : 'Bắt đầu quét'}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={stopCamera}
+                    className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors whitespace-nowrap"
+                  >
+                    <CameraOff className="h-4 w-4" />
+                    <span>Dừng camera</span>
+                  </button>
+                )}
+
+                {cameras.length > 1 && (
+                  <select
+                    value={selectedCameraId}
+                    onChange={(e) => setSelectedCameraId(e.target.value)}
+                    disabled={isScanning}
+                    className="min-h-[44px] px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-700 max-w-[200px]"
+                    aria-label="Chọn camera"
+                  >
+                    <option value="">Tự động chọn camera</option>
+                    {cameras.map((cam) => (
+                      <option key={cam.id} value={cam.id}>
+                        {cam.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 text-sm text-slate-600">
+                <label htmlFor="cooldown-select" className="whitespace-nowrap">
+                  Độ trễ quét lại:
+                </label>
+                <select
+                  id="cooldown-select"
+                  value={cooldownMs}
+                  onChange={(e) => setCooldownMs(Number(e.target.value))}
+                  className="min-h-[44px] px-2.5 py-1.5 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 tabular-nums"
+                >
+                  <option value={1000}>1.0 giây</option>
+                  <option value={1800}>1.8 giây</option>
+                  <option value={3000}>3.0 giây</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Right: Session & USB/Manual Entry */}
+          <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between">
+            <div className="space-y-4">
               <div>
-                <h2 className="text-lg font-bold text-slate-900">
-                  Quét mã vạch liên tục bằng Camera
+                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                  <Keyboard className="h-5 w-5 text-blue-600 shrink-0" />
+                  <span>Nhập tay &amp; Súng quét USB</span>
                 </h2>
                 <p className="text-sm text-slate-600 mt-0.5">
-                  Đưa mã vạch EAN-13, Code-128 hoặc QR vào khung ngắm để tự động ghi nhận.
+                  Phù hợp khi dùng máy quét cầm tay trên máy tính hoặc nhập nhanh mã bị mờ.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setSoundEnabled((v) => !v)}
-                className="min-h-[44px] inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap"
-                aria-label={soundEnabled ? 'Tắt âm báo quét' : 'Bật âm báo quét'}
-              >
-                {soundEnabled ? (
-                  <>
-                    <Volume2 className="h-4 w-4 text-blue-600" />
-                    <span>Âm báo: Bật</span>
-                  </>
-                ) : (
-                  <>
-                    <VolumeX className="h-4 w-4 text-slate-400" />
-                    <span>Âm báo: Tắt</span>
-                  </>
-                )}
-              </button>
-            </div>
-
-            {/* Camera viewport */}
-            <div
-              className={`mt-4 relative rounded-xl overflow-hidden bg-slate-900 aspect-video max-h-[320px] w-full flex items-center justify-center border-2 transition-colors ${
-                lastScannedFlash ? 'border-emerald-500' : 'border-slate-200'
-              }`}
-            >
-              <div id="barcode-reader" className="w-full h-full" />
-
-              {!isScanning && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-900 text-white">
-                  <Camera className="h-10 w-10 text-slate-400 mb-3" />
-                  <p className="text-base font-medium">
-                    Camera đang tạm dừng
-                  </p>
-                  <p className="text-sm text-slate-400 mt-1 max-w-sm">
-                    Nhấn "Bắt đầu quét" để mở camera sau trên điện thoại hoặc webcam trên máy tính.
-                  </p>
-                </div>
-              )}
-
-              {lastScannedFlash && (
-                <div className="absolute bottom-3 left-3 right-3 bg-emerald-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium flex items-center justify-between shadow-lg">
-                  <span className="truncate">
-                    Đã ghi nhận: <span className="font-mono">{lastScannedFlash}</span>
-                  </span>
-                  <Check className="h-4 w-4 shrink-0 ml-2" />
-                </div>
-              )}
-            </div>
-
-            {cameraError && (
-              <div
-                role="alert"
-                className="mt-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900"
-              >
-                {cameraError}
-              </div>
-            )}
-          </div>
-
-          {/* Camera controls */}
-          <div className="mt-4 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2.5">
-              {!isScanning ? (
-                <button
-                  type="button"
-                  onClick={startCamera}
-                  disabled={startingCamera}
-                  className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors whitespace-nowrap"
-                >
-                  <Camera className="h-4 w-4" />
-                  <span>{startingCamera ? 'Đang mở camera...' : 'Bắt đầu quét'}</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={stopCamera}
-                  className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors whitespace-nowrap"
-                >
-                  <CameraOff className="h-4 w-4" />
-                  <span>Dừng camera</span>
-                </button>
-              )}
-
-              {cameras.length > 1 && (
-                <select
-                  value={selectedCameraId}
-                  onChange={(e) => setSelectedCameraId(e.target.value)}
-                  disabled={isScanning}
-                  className="min-h-[44px] px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-700 max-w-[200px]"
-                  aria-label="Chọn camera"
-                >
-                  <option value="">Tự động chọn camera</option>
-                  {cameras.map((cam) => (
-                    <option key={cam.id} value={cam.id}>
-                      {cam.label}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-
-            <div className="flex items-center gap-2 text-sm text-slate-600">
-              <label htmlFor="cooldown-select" className="whitespace-nowrap">
-                Độ trễ quét lại:
-              </label>
-              <select
-                id="cooldown-select"
-                value={cooldownMs}
-                onChange={(e) => setCooldownMs(Number(e.target.value))}
-                className="min-h-[44px] px-2.5 py-1.5 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 tabular-nums"
-              >
-                <option value={1000}>1.0 giây</option>
-                <option value={1800}>1.8 giây</option>
-                <option value={3000}>3.0 giây</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        {/* Right: Session & USB/Manual Entry */}
-        <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between">
-          <div className="space-y-4">
-            <div>
-              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                <Keyboard className="h-5 w-5 text-blue-600 shrink-0" />
-                <span>Nhập tay &amp; Súng quét USB</span>
-              </h2>
-              <p className="text-sm text-slate-600 mt-0.5">
-                Phù hợp khi dùng máy quét cầm tay trên máy tính hoặc nhập nhanh mã bị mờ.
-              </p>
-            </div>
-
-            <div>
-              <label
-                htmlFor="session-name-input"
-                className="block text-sm font-medium text-slate-700 mb-1.5"
-              >
-                Tên phiên quét hiện tại
-              </label>
-              <input
-                id="session-name-input"
-                type="text"
-                maxLength={100}
-                value={sessionName}
-                onChange={(e) => setSessionName(e.target.value)}
-                placeholder="VD: Kiểm kho sáng 24/11"
-                className="w-full min-h-[44px] px-3.5 py-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
-              />
-            </div>
-
-            {/* Duplicate scan handling segmented control */}
-            <div>
-              <span className="block text-sm font-medium text-slate-700 mb-1.5">
-                Khi quét trùng mã trong cùng phiên
-              </span>
-              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg">
-                <button
-                  type="button"
-                  onClick={() => setAccumulateMode(true)}
-                  className={`min-h-[40px] px-3 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap ${
-                    accumulateMode
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Cộng dồn số lượng
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAccumulateMode(false)}
-                  className={`min-h-[40px] px-3 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap ${
-                    !accumulateMode
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Thêm dòng mới
-                </button>
-              </div>
-            </div>
-
-            <form onSubmit={handleManualSubmit} className="space-y-3 pt-1">
-              <div>
-                <label
-                  htmlFor="manual-barcode-input"
-                  className="block text-sm font-medium text-slate-700 mb-1.5"
-                >
-                  Mã vạch (nhấn Enter để lưu ngay)
-                </label>
-                <input
-                  ref={manualInputRef}
-                  id="manual-barcode-input"
-                  type="text"
-                  maxLength={200}
-                  value={manualCode}
-                  onChange={(e) => setManualCode(e.target.value)}
-                  placeholder="Quét hoặc nhập mã vạch..."
-                  className="w-full min-h-[44px] px-3.5 py-2.5 text-base font-mono bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
-                />
-              </div>
 
               <div>
                 <label
-                  htmlFor="manual-note-input"
+                  htmlFor="session-name-input"
                   className="block text-sm font-medium text-slate-700 mb-1.5"
                 >
-                  Ghi chú (không bắt buộc)
+                  Tên phiên quét hiện tại
                 </label>
                 <input
-                  id="manual-note-input"
+                  id="session-name-input"
                   type="text"
-                  maxLength={300}
-                  value={manualNote}
-                  onChange={(e) => setManualNote(e.target.value)}
-                  placeholder="Tên hàng hóa, vị trí kệ..."
+                  maxLength={100}
+                  value={sessionName}
+                  onChange={(e) => setSessionName(e.target.value)}
+                  placeholder="VD: Kiểm kho sáng 24/11"
                   className="w-full min-h-[44px] px-3.5 py-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
                 />
               </div>
 
-              <button
-                type="submit"
-                disabled={!manualCode.trim()}
-                className="w-full min-h-[48px] inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-slate-900 rounded-lg hover:bg-slate-800 disabled:opacity-40 transition-colors"
-              >
-                <Plus className="h-4 w-4" />
-                <span>Lưu mã vạch vào danh sách</span>
-              </button>
+              {/* Duplicate scan handling segmented control */}
+              <div>
+                <span className="block text-sm font-medium text-slate-700 mb-1.5">
+                  Khi quét trùng mã trong cùng phiên
+                </span>
+                <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg">
+                  <button
+                    type="button"
+                    onClick={() => setAccumulateMode(true)}
+                    className={`min-h-[40px] px-3 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap ${
+                      accumulateMode
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Cộng dồn số lượng
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAccumulateMode(false)}
+                    className={`min-h-[40px] px-3 py-1.5 text-sm font-medium rounded-md transition-colors whitespace-nowrap ${
+                      !accumulateMode
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Thêm dòng mới
+                  </button>
+                </div>
+              </div>
+
+              <form onSubmit={handleManualSubmit} className="space-y-3 pt-1">
+                <div>
+                  <label
+                    htmlFor="manual-barcode-input"
+                    className="block text-sm font-medium text-slate-700 mb-1.5"
+                  >
+                    Mã vạch (nhấn Enter để lưu ngay)
+                  </label>
+                  <input
+                    ref={manualInputRef}
+                    id="manual-barcode-input"
+                    type="text"
+                    maxLength={200}
+                    value={manualCode}
+                    onChange={(e) => setManualCode(e.target.value)}
+                    placeholder="Quét hoặc nhập mã vạch..."
+                    className="w-full min-h-[44px] px-3.5 py-2.5 text-base font-mono bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="manual-note-input"
+                    className="block text-sm font-medium text-slate-700 mb-1.5"
+                  >
+                    Ghi chú (không bắt buộc)
+                  </label>
+                  <input
+                    id="manual-note-input"
+                    type="text"
+                    maxLength={300}
+                    value={manualNote}
+                    onChange={(e) => setManualNote(e.target.value)}
+                    placeholder="Tên hàng hóa, vị trí kệ..."
+                    className="w-full min-h-[44px] px-3.5 py-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={!manualCode.trim()}
+                  className="w-full min-h-[48px] inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-slate-900 rounded-lg hover:bg-slate-800 disabled:opacity-40 transition-colors"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>Lưu mã vạch vào danh sách</span>
+                </button>
               </form>
             </div>
           </div>
         </div>
       ) : (
         <div className="bg-white border border-slate-200 rounded-xl p-4 text-sm text-slate-600">
-          Tài khoản của bạn đang ở chế độ <strong>Chỉ xem</strong>. Bạn có thể tìm kiếm và xuất báo cáo Excel mã vạch bên dưới.
+          Tài khoản của bạn hiện chỉ có quyền xem dữ liệu mã vạch và xuất báo cáo Excel bên dưới.
         </div>
       )}
 
@@ -674,11 +698,11 @@ export function BarcodeScannerTab({
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            {canSupabase && supabaseReady && (
+            {canSupabase && supabaseReady && unsyncedCount > 0 && (
               <button
                 type="button"
                 onClick={onSyncToSupabase}
-                disabled={isSyncing || unsyncedCount === 0}
+                disabled={isSyncing}
                 className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors whitespace-nowrap"
               >
                 <Database className="h-4 w-4 text-emerald-600" />
@@ -690,7 +714,7 @@ export function BarcodeScannerTab({
               </button>
             )}
 
-            {canEdit && filteredScans.length > 0 && (
+            {canDelete && filteredScans.length > 0 && (
               <button
                 type="button"
                 onClick={() => setClearSessionConfirm(true)}
@@ -719,10 +743,7 @@ export function BarcodeScannerTab({
         {loading ? (
           <div className="p-6 space-y-3">
             {[1, 2, 3].map((n) => (
-              <div
-                key={n}
-                className="h-12 bg-slate-100 rounded-lg animate-pulse"
-              />
+              <div key={n} className="h-12 bg-slate-100 rounded-lg" />
             ))}
           </div>
         ) : filteredScans.length === 0 ? (
@@ -731,7 +752,7 @@ export function BarcodeScannerTab({
               Chưa có mã vạch nào được lưu
             </p>
             <p className="mt-1.5 text-sm text-slate-600 max-w-md mx-auto">
-              Hãy nhấn "Bắt đầu quét" để mở camera hoặc nhập mã trực tiếp vào ô súng quét USB ở trên.
+              Hãy nhấn &quot;Bắt đầu quét&quot; để mở camera hoặc nhập mã trực tiếp vào ô súng quét USB ở trên.
             </p>
           </div>
         ) : (
@@ -762,8 +783,10 @@ export function BarcodeScannerTab({
                         </div>
                         <div className="text-xs text-slate-500 mt-0.5">
                           {showOwnerEmail ? `${scan.ownerEmail} · ` : ''}
+                          <span className="tabular-nums">v{scan.version}</span>
+                          {' · '}
                           {scan.syncedToSupabase
-                            ? 'Đã đồng bộ Supabase'
+                            ? 'Đồng bộ Supabase'
                             : 'Lưu trên đám mây'}
                         </div>
                       </td>
@@ -848,7 +871,7 @@ export function BarcodeScannerTab({
                         {formatTime(scan)}
                       </td>
                       <td className="py-3 px-4 text-right">
-                        {canEdit && (
+                        {canDelete && (
                           <button
                             type="button"
                             onClick={() => setDeleteTarget(scan)}
@@ -878,11 +901,13 @@ export function BarcodeScannerTab({
                         {scan.sessionName} <span aria-hidden="true">·</span>{' '}
                         <span className="font-mono">{scan.format}</span>{' '}
                         <span aria-hidden="true">·</span>{' '}
-                        <span className="tabular-nums">{formatTime(scan)}</span>
+                        <span className="tabular-nums">{formatTime(scan)}</span>{' '}
+                        <span aria-hidden="true">·</span>{' '}
+                        <span className="tabular-nums">v{scan.version}</span>
                         {showOwnerEmail ? ` · ${scan.ownerEmail}` : ''}
                       </p>
                     </div>
-                    {canEdit && (
+                    {canDelete && (
                       <button
                         type="button"
                         onClick={() => setDeleteTarget(scan)}

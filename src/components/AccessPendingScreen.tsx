@@ -1,12 +1,12 @@
 import { LogOut, RefreshCw, ShieldAlert } from 'lucide-react';
 import { SUPER_ADMIN_EMAIL } from '../lib/permissions';
-import { signOutAccount } from '../lib/firebase';
 
 interface AccessPendingScreenProps {
   email: string;
   deactivated: boolean;
   checking: boolean;
   onRecheck: () => void;
+  onSignOut: () => void;
 }
 
 export function AccessPendingScreen({
@@ -14,6 +14,7 @@ export function AccessPendingScreen({
   deactivated,
   checking,
   onRecheck,
+  onSignOut,
 }: AccessPendingScreenProps) {
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 sm:p-6">
@@ -29,12 +30,12 @@ export function AccessPendingScreen({
                 : 'Email chưa được cấp quyền truy cập'}
             </h1>
             <p className="mt-2 text-sm text-slate-600 leading-relaxed">
-              Tài khoản Gmail{' '}
+              Tài khoản{' '}
               <span className="font-mono font-medium text-slate-900">
                 {email}
               </span>{' '}
               {deactivated
-                ? 'hiện đang bị tạm khóa trong danh sách phân quyền.'
+                ? 'hiện đang bị tạm khóa trong bảng phân quyền.'
                 : 'chưa có trong danh sách thành viên được phép sử dụng ứng dụng.'}
             </p>
           </div>
@@ -43,9 +44,9 @@ export function AccessPendingScreen({
         <div className="mt-5 p-4 rounded-lg bg-slate-50 border border-slate-200 text-sm text-slate-700 space-y-1.5">
           <p className="font-medium text-slate-900">Cách để được cấp quyền:</p>
           <p>
-            Hãy liên hệ quản trị viên (
+            Hãy liên hệ Quản lý siêu thị (
             <span className="font-mono text-slate-900">{SUPER_ADMIN_EMAIL}</span>
-            ) để thêm địa chỉ Gmail của bạn vào mục <strong>Phân quyền</strong> và chọn vai trò phù hợp.
+            ) để thêm địa chỉ email của bạn vào mục <strong>Phân quyền</strong> và chọn vai trò phù hợp.
           </p>
         </div>
 
@@ -62,11 +63,11 @@ export function AccessPendingScreen({
 
           <button
             type="button"
-            onClick={() => signOutAccount()}
+            onClick={onSignOut}
             className="min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap"
           >
             <LogOut className="h-4 w-4" />
-            <span>Đổi Gmail khác</span>
+            <span>Đổi tài khoản khác</span>
           </button>
         </div>
       </div>

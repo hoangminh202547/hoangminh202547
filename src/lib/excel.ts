@@ -1,8 +1,10 @@
 import writeXlsxFile, { type Row } from 'write-excel-file/browser';
 import type { BarcodeScan, ScheduleStatus, ShiftType, WorkSchedule } from '../types';
 
-function formatDateTime(date: Date | null): string {
-  if (!date) return '';
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
   return new Intl.DateTimeFormat('vi-VN', {
     day: '2-digit',
     month: '2-digit',
@@ -10,7 +12,7 @@ function formatDateTime(date: Date | null): string {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-  }).format(date);
+  }).format(d);
 }
 
 const HEADER_STYLE = {
@@ -32,6 +34,7 @@ export async function exportBarcodesToExcel(
     { value: 'Ghi chú', ...HEADER_STYLE },
     { value: 'Thời gian quét', ...HEADER_STYLE },
     { value: 'Người quét (Gmail)', ...HEADER_STYLE },
+    { value: 'Phiên bản', ...HEADER_STYLE },
     { value: 'Đồng bộ Supabase', ...HEADER_STYLE },
   ];
 
@@ -42,11 +45,9 @@ export async function exportBarcodesToExcel(
     { type: String, value: item.sessionName },
     { type: Number, value: item.quantity },
     { type: String, value: item.note || '' },
-    {
-      type: String,
-      value: formatDateTime(item.scannedAt ? item.scannedAt.toDate() : null),
-    },
+    { type: String, value: formatDateTime(item.scannedAt) },
     { type: String, value: item.ownerEmail },
+    { type: Number, value: item.version || 1 },
     {
       type: String,
       value: item.syncedToSupabase ? 'Đã đồng bộ' : 'Chưa đồng bộ',
@@ -111,6 +112,7 @@ export async function exportBarcodesToExcel(
           { width: 28 },
           { width: 22 },
           { width: 28 },
+          { width: 10 },
           { width: 18 },
         ],
       },
@@ -164,6 +166,7 @@ export async function exportSchedulesToExcel(
     { value: 'Giờ kết thúc', ...HEADER_STYLE },
     { value: 'Địa điểm', ...HEADER_STYLE },
     { value: 'Trạng thái', ...HEADER_STYLE },
+    { value: 'Người phê duyệt', ...HEADER_STYLE },
     { value: 'Ghi chú', ...HEADER_STYLE },
     { value: 'Email đăng ký', ...HEADER_STYLE },
     { value: 'Đồng bộ Supabase', ...HEADER_STYLE },
@@ -179,6 +182,7 @@ export async function exportSchedulesToExcel(
     { type: String, value: item.endTime },
     { type: String, value: item.location || '' },
     { type: String, value: STATUS_LABELS[item.status] || item.status },
+    { type: String, value: item.approvedBy || '' },
     { type: String, value: item.note || '' },
     { type: String, value: item.ownerEmail },
     {
@@ -205,6 +209,7 @@ export async function exportSchedulesToExcel(
           { width: 12 },
           { width: 22 },
           { width: 16 },
+          { width: 24 },
           { width: 28 },
           { width: 28 },
           { width: 18 },

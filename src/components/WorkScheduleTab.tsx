@@ -24,11 +24,14 @@ interface WorkScheduleTabProps {
   schedules: WorkSchedule[];
   loading: boolean;
   defaultEmployeeName: string;
+  canCreate: boolean;
   canEdit: boolean;
+  canDelete: boolean;
+  canApprove: boolean;
   canExport: boolean;
   canSupabase: boolean;
   showOwnerEmail: boolean;
-  isAdmin: boolean;
+  isStoreManager: boolean;
   supabaseReady: boolean;
   isSyncing: boolean;
   onCreateSchedule: (data: {
@@ -57,6 +60,7 @@ interface WorkScheduleTabProps {
   ) => Promise<void>;
   onDeleteSchedule: (schedule: WorkSchedule) => Promise<void>;
   onSyncToSupabase: () => Promise<void>;
+  onExportLogged?: (fileName: string, count: number) => void;
   onNotify: (type: 'success' | 'error' | 'info', message: string) => void;
 }
 
@@ -111,17 +115,21 @@ export function WorkScheduleTab({
   schedules,
   loading,
   defaultEmployeeName,
+  canCreate,
   canEdit,
+  canDelete,
+  canApprove,
   canExport,
   canSupabase,
   showOwnerEmail,
-  isAdmin,
+  isStoreManager,
   supabaseReady,
   isSyncing,
   onCreateSchedule,
   onUpdateSchedule,
   onDeleteSchedule,
   onSyncToSupabase,
+  onExportLogged,
   onNotify,
 }: WorkScheduleTabProps) {
   const todayStr = useMemo(() => toYmd(new Date()), []);
@@ -207,6 +215,10 @@ export function WorkScheduleTab({
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || !employeeName.trim()) return;
+    if (startTime >= endTime) {
+      onNotify('error', 'Giờ kết thúc phải sau giờ bắt đầu.');
+      return;
+    }
     setSubmitting(true);
     try {
       if (editingItem) {
@@ -286,6 +298,9 @@ export function WorkScheduleTab({
       return;
     }
     const fileName = await exportSchedulesToExcel(schedules);
+    if (onExportLogged) {
+      onExportLogged(fileName, schedules.length);
+    }
     onNotify('success', `Đã xuất file Excel: ${fileName}`);
   };
 
@@ -366,11 +381,11 @@ export function WorkScheduleTab({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          {canSupabase && supabaseReady && (
+          {canSupabase && supabaseReady && unsyncedCount > 0 && (
             <button
               type="button"
               onClick={onSyncToSupabase}
-              disabled={isSyncing || unsyncedCount === 0}
+              disabled={isSyncing}
               className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors whitespace-nowrap"
             >
               <Database className="h-4 w-4 text-emerald-600" />
@@ -392,7 +407,7 @@ export function WorkScheduleTab({
             </button>
           )}
 
-          {canEdit && (
+          {canCreate && (
             <button
               type="button"
               onClick={() => openCreateModal()}
@@ -509,7 +524,7 @@ export function WorkScheduleTab({
               ? `Lịch làm việc ngày ${selectedDate.split('-').reverse().join('/')}`
               : `Danh sách lịch làm việc (${filteredSchedules.length})`}
           </h3>
-          {canEdit && viewMode === 'week' && (
+          {canCreate && viewMode === 'week' && (
             <button
               type="button"
               onClick={() => openCreateModal(selectedDate)}
@@ -524,10 +539,7 @@ export function WorkScheduleTab({
         {loading ? (
           <div className="p-6 space-y-3">
             {[1, 2, 3].map((n) => (
-              <div
-                key={n}
-                className="h-16 bg-slate-100 rounded-lg animate-pulse"
-              />
+              <div key={n} className="h-16 bg-slate-100 rounded-lg" />
             ))}
           </div>
         ) : filteredSchedules.length === 0 ? (
@@ -538,9 +550,11 @@ export function WorkScheduleTab({
                 : 'Chưa có lịch làm việc phù hợp'}
             </p>
             <p className="mt-1.5 text-sm text-slate-600">
-              Nhấn "Đăng ký lịch làm việc" để tạo ca làm mới.
+              {canCreate
+                ? 'Nhấn "Đăng ký lịch làm việc" để tạo ca làm mới.'
+                : 'Chưa có dữ liệu ca làm việc nào được hiển thị.'}
             </p>
-            {canEdit && (
+            {canCreate && (
               <button
                 type="button"
                 onClick={() =>
@@ -580,13 +594,19 @@ export function WorkScheduleTab({
                       <span className="text-slate-600 tabular-nums">
                         {item.workDate.split('-').reverse().join('/')}
                       </span>
+                      <span aria-hidden="true" className="text-slate-300">
+                        ·
+                      </span>
+                      <span className="text-slate-500 tabular-nums">
+                        v{item.version}
+                      </span>
                       {item.syncedToSupabase && (
                         <>
                           <span aria-hidden="true" className="text-slate-300">
                             ·
                           </span>
                           <span className="text-emerald-700">
-                            Đã đồng bộ Supabase
+                            Đồng bộ Supabase
                           </span>
                         </>
                       )}
@@ -616,15 +636,21 @@ export function WorkScheduleTab({
                       )}
                     </div>
 
+                    {item.approvedBy && (
+                      <p className="text-xs text-emerald-700">
+                        Phê duyệt bởi: <span className="font-mono">{item.approvedBy}</span>
+                      </p>
+                    )}
+
                     {item.note && (
                       <p className="text-sm text-slate-500">{item.note}</p>
                     )}
                   </div>
 
-                  {/* Actions */}
-                  {canEdit && (
+                  {/* Actions guarded by role & module permissions */}
+                  {(canApprove || canEdit || canDelete) && (
                     <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      {item.status === 'registered' && (
+                      {canApprove && item.status === 'registered' && (
                         <button
                           type="button"
                           onClick={() =>
@@ -633,25 +659,26 @@ export function WorkScheduleTab({
                           className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors whitespace-nowrap"
                         >
                           <CheckCircle2 className="h-4 w-4" />
-                          <span>Xác nhận</span>
+                          <span>Phê duyệt</span>
                         </button>
                       )}
 
-                      {(item.status === 'registered' ||
-                        item.status === 'confirmed') && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onUpdateSchedule(item, { status: 'completed' })
-                          }
-                          className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap"
-                        >
-                          <CheckCircle2 className="h-4 w-4" />
-                          <span>Hoàn thành</span>
-                        </button>
-                      )}
+                      {canApprove &&
+                        (item.status === 'registered' ||
+                          item.status === 'confirmed') && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onUpdateSchedule(item, { status: 'completed' })
+                            }
+                            className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap"
+                          >
+                            <CheckCircle2 className="h-4 w-4" />
+                            <span>Hoàn thành</span>
+                          </button>
+                        )}
 
-                      {(!isCancelled || isAdmin) && (
+                      {canEdit && (!isCancelled || isStoreManager) && (
                         <>
                           <button
                             type="button"
@@ -675,14 +702,16 @@ export function WorkScheduleTab({
                         </>
                       )}
 
-                      <button
-                        type="button"
-                        onClick={() => setDeleteTarget(item)}
-                        className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50 transition-colors"
-                        aria-label="Xóa lịch làm việc"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      {canDelete && (
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(item)}
+                          className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50 transition-colors"
+                          aria-label="Xóa lịch làm việc"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -903,7 +932,7 @@ export function WorkScheduleTab({
         title="Hủy ca làm việc này?"
         description={
           cancelTarget
-            ? `Sau khi hủy, ca "${cancelTarget.title}" ngày ${cancelTarget.workDate.split('-').reverse().join('/')} sẽ chuyển sang trạng thái Đã hủy và khóa chỉnh sửa.`
+            ? `Sau khi hủy, ca "${cancelTarget.title}" ngày ${cancelTarget.workDate.split('-').reverse().join('/')} sẽ chuyển sang trạng thái Đã hủy.`
             : ''
         }
         confirmLabel="Xác nhận hủy ca"
