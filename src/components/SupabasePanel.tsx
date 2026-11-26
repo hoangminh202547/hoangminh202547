@@ -26,6 +26,7 @@ import {
   signInWithSupabaseGooglePopup,
   testSupabaseConnection,
   type SupabaseAuthSettings,
+  type SupabaseDiagnosticItem,
 } from '../lib/supabase';
 import type { DataBackendMode, SupabaseConfig, SyncState } from '../types';
 import { SyncStatusBadge } from './SyncStatusBadge';
@@ -68,6 +69,7 @@ export function SupabasePanel({
   const [testResult, setTestResult] = useState<{
     ok: boolean;
     message: string;
+    details?: SupabaseDiagnosticItem[];
   } | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
   const [showSql, setShowSql] = useState(false);
@@ -427,18 +429,42 @@ export function SupabasePanel({
           {testResult && (
             <div
               role="status"
-              className={`p-3.5 rounded-lg border text-sm flex items-start gap-2.5 ${
+              className={`p-3.5 rounded-lg border text-sm space-y-3 ${
                 testResult.ok
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
                   : 'bg-amber-50 border-amber-200 text-amber-900'
               }`}
             >
-              {testResult.ok ? (
-                <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
-              ) : (
-                <XCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="flex items-start gap-2.5">
+                {testResult.ok ? (
+                  <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
+                ) : (
+                  <XCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                )}
+                <span className="font-medium">{testResult.message}</span>
+              </div>
+
+              {testResult.details && testResult.details.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-2 border-t border-black/10 text-xs">
+                  {testResult.details.map((d) => (
+                    <div
+                      key={d.name}
+                      className="flex items-center justify-between gap-2 bg-white/80 rounded px-2.5 py-1.5"
+                    >
+                      <span className="font-medium text-slate-800 truncate">
+                        {d.name}
+                      </span>
+                      <span
+                        className={`shrink-0 ${
+                          d.ok ? 'text-emerald-700' : 'text-red-600 font-medium'
+                        }`}
+                      >
+                        {d.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               )}
-              <span>{testResult.message}</span>
             </div>
           )}
 

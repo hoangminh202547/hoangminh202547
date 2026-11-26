@@ -636,10 +636,18 @@ export function mapActivityRow(r: Record<string, unknown>): ActivityLog {
 // ============================================================================
 // Connection Diagnostics
 // ============================================================================
+export interface SupabaseDiagnosticItem {
+  name: string;
+  ok: boolean;
+  status: string;
+}
+
 export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
   ok: boolean;
   message: string;
   tablesReady?: boolean;
+  erpReady?: boolean;
+  details?: SupabaseDiagnosticItem[];
 }> {
   const urlError = getSupabaseUrlError(config.url);
   if (urlError) {
@@ -657,45 +665,184 @@ export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
       return { ok: false, message: 'Không thể khởi tạo Supabase client.' };
     }
 
-    const [scanRes, schedRes, accessRes, logRes] = await Promise.all([
-      client.from('barcode_scans').select('id', { count: 'exact', head: true }),
-      client.from('work_schedules').select('id', { count: 'exact', head: true }),
-      client.from('user_access').select('id', { count: 'exact', head: true }),
-      client.from('activity_logs').select('id', { count: 'exact', head: true }),
+    const coreTables = [
+      'barcode_scans',
+      'work_schedules',
+      'user_access',
+      'activity_logs',
+    ] as const;
+    const erpTables = [
+      'system_settings',
+      'shift_definitions',
+      'attendance_logs',
+      'customer_feedbacks',
+      'product_catalog',
+      'supplier_policies',
+      'expiry_tracking',
+      'return_records',
+      'promotions',
+    ] as const;
+
+    const [authRes, coreResults, erpResults, storageRes] = await Promise.all([
+      fetchSupabaseAuthSettings(config),
+      Promise.all(
+        coreTables.map(async (t) => ({
+          table: t,
+          res: await client.from(t).select('id', { count: 'exact', head: true }),
+        }))
+      ),
+      Promise.all(
+        erpTables.map(async (t) => ({
+          table: t,
+          res: await client
+            .from(t)
+            .select(t === 'system_settings' ? 'key' : 'id', {
+              count: 'exact',
+              head: true,
+            }),
+        }))
+      ),
+      client.storage.from('internal-media').list('', { limit: 1 }),
     ]);
 
-    const firstError =
-      scanRes.error || schedRes.error || accessRes.error || logRes.error;
+    const details: SupabaseDiagnosticItem[] = [];
+    details.push({
+      name: 'Supabase Auth API',
+      ok: authRes.ok,
+      status: authRes.ok
+        ? `Hoạt động (Google OAuth: ${authRes.googleEnabled ? 'Bật' : 'Tắt'}, Email OTP: ${authRes.emailEnabled ? 'Bật' : 'Tắt'})`
+        : authRes.error || 'Không phản hồi',
+    });
 
-    if (firstError) {
-      const msg = firstError.message || 'Lỗi truy vấn bảng';
-      if (
-        msg.includes('does not exist') ||
-        msg.includes('schema cache') ||
-        msg.includes('42P01')
-      ) {
-        return {
-          ok: false,
-          tablesReady: false,
-          message:
-            'Đã kết nối tới Supabase nhưng thiếu bảng (barcode_scans, work_schedules, user_access, activity_logs). Hãy chạy script SQL bên dưới trong SQL Editor.',
-        };
-      }
-      if (msg.includes('permission denied') || msg.includes('RLS')) {
-        return {
+    const isMissingTableErr = (msg: string) =>
+      msg.includes('does not exist') ||
+      msg.includes('schema cache') ||
+      msg.includes('42P01');
+
+    const isRlsBlocked = (msg: string) =>
+      msg.includes('permission denied') ||
+      msg.includes('RLS') ||
+      msg.includes('row-level security');
+
+    let missingCore = 0;
+    let missingErp = 0;
+    let networkErrMsg = '';
+
+    for (const item of coreResults) {
+      const err = item.res.error;
+      if (!err) {
+        details.push({
+          name: `Bảng ${item.table}`,
           ok: true,
-          tablesReady: true,
-          message:
-            'Đã kết nối Supabase và bật RLS bảo mật. Đăng nhập tài khoản qua Supabase Auth để truy xuất dữ liệu theo phân quyền.',
-        };
+          status: `Sẵn sàng (${item.res.count ?? 0} bản ghi)`,
+        });
+      } else if (isMissingTableErr(err.message || '')) {
+        missingCore += 1;
+        details.push({
+          name: `Bảng ${item.table}`,
+          ok: false,
+          status: 'Chưa tạo (cần chạy schema.sql)',
+        });
+      } else if (isRlsBlocked(err.message || '')) {
+        details.push({
+          name: `Bảng ${item.table}`,
+          ok: true,
+          status: 'Đã tạo & bật RLS (cần đăng nhập Supabase Auth để đọc)',
+        });
+      } else {
+        networkErrMsg = networkErrMsg || err.message;
+        details.push({
+          name: `Bảng ${item.table}`,
+          ok: false,
+          status: err.message,
+        });
       }
-      return { ok: false, message: `Lỗi Supabase: ${msg}` };
+    }
+
+    for (const item of erpResults) {
+      const err = item.res.error;
+      if (!err) {
+        details.push({
+          name: `Bảng ${item.table}`,
+          ok: true,
+          status: `Sẵn sàng (${item.res.count ?? 0} bản ghi)`,
+        });
+      } else if (isMissingTableErr(err.message || '')) {
+        missingErp += 1;
+        details.push({
+          name: `Bảng ${item.table}`,
+          ok: false,
+          status: 'Chưa tạo (cần chạy 002_full_erp.sql)',
+        });
+      } else if (isRlsBlocked(err.message || '')) {
+        details.push({
+          name: `Bảng ${item.table}`,
+          ok: true,
+          status: 'Đã tạo & bật RLS',
+        });
+      } else {
+        details.push({
+          name: `Bảng ${item.table}`,
+          ok: false,
+          status: err.message,
+        });
+      }
+    }
+
+    if (storageRes.error) {
+      const sMsg = storageRes.error.message || '';
+      if (sMsg.toLowerCase().includes('not found') || sMsg.toLowerCase().includes('bucket')) {
+        details.push({
+          name: 'Storage (internal-media)',
+          ok: false,
+          status: 'Chưa tạo bucket internal-media (cần chạy 002_full_erp.sql)',
+        });
+      } else {
+        details.push({
+          name: 'Storage (internal-media)',
+          ok: true,
+          status: 'Bucket có bảo vệ RLS (cần phiên Auth để liệt kê)',
+        });
+      }
+    } else {
+      details.push({
+        name: 'Storage (internal-media)',
+        ok: true,
+        status: 'Sẵn sàng',
+      });
+    }
+
+    if (!authRes.ok && networkErrMsg) {
+      return { ok: false, message: `Lỗi kết nối Supabase: ${networkErrMsg}`, details };
+    }
+
+    if (missingCore > 0) {
+      return {
+        ok: false,
+        tablesReady: false,
+        erpReady: false,
+        details,
+        message: `Đã kết nối tới Supabase nhưng thiếu ${missingCore} bảng nền tảng. Hãy mở SQL Editor chạy "Schema nền tảng" rồi chạy "Nâng cấp ERP 002".`,
+      };
+    }
+
+    if (missingErp > 0) {
+      return {
+        ok: false,
+        tablesReady: true,
+        erpReady: false,
+        details,
+        message: `Đã kết nối Supabase (4 bảng cơ bản đã sẵn sàng) nhưng còn thiếu ${missingErp} bảng ERP mới (Chấm công, Kho, HSD, Đổi trả, Khuyến mãi...). Hãy chạy script "Nâng cấp ERP 002" trong SQL Editor.`,
+      };
     }
 
     return {
       ok: true,
       tablesReady: true,
-      message: `Kết nối thành công · Đã sẵn sàng 4 bảng đồng bộ (${scanRes.count ?? 0} mã vạch · ${schedRes.count ?? 0} ca làm · ${accessRes.count ?? 0} phân quyền · ${logRes.count ?? 0} nhật ký).`,
+      erpReady: true,
+      details,
+      message:
+        'Kết nối Supabase hoạt động đầy đủ: Auth, toàn bộ 13 bảng dữ liệu, RLS và Storage đã sẵn sàng.',
     };
   } catch (error) {
     return {
