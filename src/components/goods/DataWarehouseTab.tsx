@@ -782,9 +782,11 @@ export function DataWarehouseTab({
             <table className="w-full text-left border-collapse text-sm">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-600">
-                  <th className="py-3 px-3 w-10">
-                    <CheckSquare className="h-4 w-4 text-slate-400" />
-                  </th>
+                  {canEdit && (
+                    <th className="py-3 px-3 w-10">
+                      <CheckSquare className="h-4 w-4 text-slate-400" />
+                    </th>
+                  )}
                   <th className="py-3 px-3">STT</th>
                   <th className="py-3 px-3">Mã hàng</th>
                   <th className="py-3 px-3">Mã vạch</th>
@@ -797,34 +799,36 @@ export function DataWarehouseTab({
               <tbody className="divide-y divide-slate-100">
                 {loading ? (
                   <tr>
-                    <td colSpan={8} className="py-8 text-center text-slate-500">
+                    <td colSpan={canEdit ? 8 : 7} className="py-8 text-center text-slate-500">
                       Đang tải danh mục hàng...
                     </td>
                   </tr>
                 ) : catalogRows.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-10 text-center text-slate-500">
+                    <td colSpan={canEdit ? 8 : 7} className="py-10 text-center text-slate-500">
                       Chưa có mặt hàng nào trong kho dữ liệu.
                     </td>
                   </tr>
                 ) : (
                   catalogRows.map((item, idx) => (
                     <tr key={item.id} className="hover:bg-slate-50/60">
-                      <td className="py-2.5 px-3">
-                        <input
-                          type="checkbox"
-                          checked={selectedCatIds.has(item.id)}
-                          onChange={(e) => {
-                            setSelectedCatIds((prev) => {
-                              const next = new Set(prev);
-                              if (e.target.checked) next.add(item.id);
-                              else next.delete(item.id);
-                              return next;
-                            });
-                          }}
-                          className="h-4 w-4 rounded border-slate-300"
-                        />
-                      </td>
+                      {canEdit && (
+                        <td className="py-2.5 px-3">
+                          <input
+                            type="checkbox"
+                            checked={selectedCatIds.has(item.id)}
+                            onChange={(e) => {
+                              setSelectedCatIds((prev) => {
+                                const next = new Set(prev);
+                                if (e.target.checked) next.add(item.id);
+                                else next.delete(item.id);
+                                return next;
+                              });
+                            }}
+                            className="h-4 w-4 rounded border-slate-300"
+                          />
+                        </td>
+                      )}
                       <td className="py-2.5 px-3 font-mono text-xs text-slate-500 tabular-nums">
                         {(page - 1) * pageSize + idx + 1}
                       </td>
@@ -849,9 +853,11 @@ export function DataWarehouseTab({
             <table className="w-full text-left border-collapse text-sm">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-600">
-                  <th className="py-3 px-3 w-10">
-                    <CheckSquare className="h-4 w-4 text-slate-400" />
-                  </th>
+                  {canEdit && (
+                    <th className="py-3 px-3 w-10">
+                      <CheckSquare className="h-4 w-4 text-slate-400" />
+                    </th>
+                  )}
                   <th className="py-3 px-3">STT</th>
                   <th className="py-3 px-3">Ngành hàng</th>
                   <th className="py-3 px-3">Tên NCC</th>
@@ -864,34 +870,36 @@ export function DataWarehouseTab({
               <tbody className="divide-y divide-slate-100">
                 {loading ? (
                   <tr>
-                    <td colSpan={8} className="py-8 text-center text-slate-500">
+                    <td colSpan={canEdit ? 8 : 7} className="py-8 text-center text-slate-500">
                       Đang tải chính sách NCC...
                     </td>
                   </tr>
                 ) : policyRows.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-10 text-center text-slate-500">
+                    <td colSpan={canEdit ? 8 : 7} className="py-10 text-center text-slate-500">
                       Chưa có chính sách đổi trả NCC nào.
                     </td>
                   </tr>
                 ) : (
                   policyRows.map((item, idx) => (
                     <tr key={item.id} className="hover:bg-slate-50/60">
-                      <td className="py-2.5 px-3">
-                        <input
-                          type="checkbox"
-                          checked={selectedPolIds.has(item.id)}
-                          onChange={(e) => {
-                            setSelectedPolIds((prev) => {
-                              const next = new Set(prev);
-                              if (e.target.checked) next.add(item.id);
-                              else next.delete(item.id);
-                              return next;
-                            });
-                          }}
-                          className="h-4 w-4 rounded border-slate-300"
-                        />
-                      </td>
+                      {canEdit && (
+                        <td className="py-2.5 px-3">
+                          <input
+                            type="checkbox"
+                            checked={selectedPolIds.has(item.id)}
+                            onChange={(e) => {
+                              setSelectedPolIds((prev) => {
+                                const next = new Set(prev);
+                                if (e.target.checked) next.add(item.id);
+                                else next.delete(item.id);
+                                return next;
+                              });
+                            }}
+                            className="h-4 w-4 rounded border-slate-300"
+                          />
+                        </td>
+                      )}
                       <td className="py-2.5 px-3 font-mono text-xs text-slate-500 tabular-nums">
                         {(page - 1) * pageSize + idx + 1}
                       </td>

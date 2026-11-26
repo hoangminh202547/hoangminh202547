@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import {
   SUPABASE_MIGRATION_002_SQL,
+  SUPABASE_MIGRATION_003_SQL,
   SUPABASE_SCHEMA_SQL,
   extractSupabaseProjectRef,
   fetchSupabaseAuthSettings,
@@ -149,7 +150,9 @@ export function SupabasePanel({
     useState<SupabaseConfig | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
   const [showSql, setShowSql] = useState(false);
-  const [sqlTab, setSqlTab] = useState<'migration' | 'base'>('migration');
+  const [sqlTab, setSqlTab] = useState<'rls_fix' | 'migration' | 'base'>(
+    'rls_fix'
+  );
 
   // In-app Supabase Auth activation state
   const [authMethod, setAuthMethod] = useState<'otp' | 'password' | 'google'>(
@@ -459,7 +462,11 @@ export function SupabasePanel({
   };
 
   const activeSqlScript =
-    sqlTab === 'migration' ? SUPABASE_MIGRATION_002_SQL : SUPABASE_SCHEMA_SQL;
+    sqlTab === 'rls_fix'
+      ? SUPABASE_MIGRATION_003_SQL
+      : sqlTab === 'migration'
+        ? SUPABASE_MIGRATION_002_SQL
+        : SUPABASE_SCHEMA_SQL;
 
   const handleCopySql = async () => {
     try {
@@ -1224,12 +1231,22 @@ export function SupabasePanel({
               SQL Schema &amp; Nâng cấp Database (RLS, Trigger, Storage, Realtime)
             </h3>
             <p className="mt-1 text-sm text-slate-600">
-              Chạy <span className="font-mono text-xs">schema.sql</span> khi cài mới, sau đó chạy{' '}
-              <span className="font-mono text-xs">002_full_erp.sql</span> (an toàn dữ liệu cũ) trong SQL Editor trên Supabase Dashboard.
+              Chạy <span className="font-mono text-xs">schema.sql</span> khi cài mới,{' '}
+              <span className="font-mono text-xs">002_full_erp.sql</span> cho bảng ERP, và{' '}
+              <span className="font-mono text-xs">003_fix_rls_policies.sql</span> để đồng bộ đầy đủ RLS (an toàn dữ liệu cũ) trong SQL Editor trên Supabase Dashboard.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <div className="inline-flex p-1 bg-slate-100 rounded-lg">
+            <div className="inline-flex flex-wrap p-1 bg-slate-100 rounded-lg">
+              <button
+                type="button"
+                onClick={() => setSqlTab('rls_fix')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md ${
+                  sqlTab === 'rls_fix' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                003_fix_rls_policies.sql (Sửa RLS)
+              </button>
               <button
                 type="button"
                 onClick={() => setSqlTab('migration')}

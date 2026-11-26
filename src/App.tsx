@@ -511,6 +511,14 @@ function MainApp() {
     return 'firebase';
   }, [supabaseClient, supabaseSession]);
 
+  // Only pass the Supabase client to ERP data modules when a real authenticated
+  // Supabase Auth session exists; otherwise unauthenticated writes would hit
+  // Postgres as `anon` and fail with "new row violates row-level security policy".
+  const activeSupabaseClient = useMemo(
+    () => (backendMode === 'supabase' ? supabaseClient : null),
+    [backendMode, supabaseClient]
+  );
+
   const currentUser: AuthenticatedUser | null = useMemo(() => {
     if (supabaseSession?.user) {
       const u = supabaseSession.user;
@@ -3030,7 +3038,7 @@ function MainApp() {
             {/* Group 1: Vận hành */}
             {activeTab === 'overview' && canSeeTab('overview') && (
               <OverviewTab
-                client={supabaseClient}
+                client={activeSupabaseClient}
                 user={currentUser}
                 modules={permissions.modules}
                 onNavigate={selectTab}
@@ -3039,7 +3047,7 @@ function MainApp() {
 
             {activeTab === 'schedule' && canSeeTab('schedule') && (
               <WorkScheduleTab
-                client={supabaseClient}
+                client={activeSupabaseClient}
                 schedules={schedules}
                 shifts={shifts}
                 leaveRules={leaveRules}
@@ -3075,7 +3083,7 @@ function MainApp() {
 
             {activeTab === 'attendance' && canSeeTab('attendance') && (
               <AttendanceTab
-                client={supabaseClient}
+                client={activeSupabaseClient}
                 user={currentUser}
                 todaySchedules={myTodaySchedules}
                 shifts={shifts}
@@ -3090,7 +3098,7 @@ function MainApp() {
 
             {activeTab === 'staff' && canSeeTab('staff') && (
               <StaffProfileTab
-                client={supabaseClient}
+                client={activeSupabaseClient}
                 user={currentUser}
                 members={authorizedMembers}
                 onProfileUpdated={(newName) => setCustomDisplayName(newName)}
@@ -3100,7 +3108,7 @@ function MainApp() {
 
             {activeTab === 'feedback' && canSeeTab('feedback') && (
               <CustomerFeedbackTab
-                client={supabaseClient}
+                client={activeSupabaseClient}
                 user={currentUser}
                 canDeleteAny={
                   permissions.role === 'store_manager' ||
@@ -3117,7 +3125,7 @@ function MainApp() {
             {/* Group 2: Hàng hóa */}
             {activeTab === 'warehouse' && canSeeTab('warehouse') && (
               <DataWarehouseTab
-                client={supabaseClient}
+                client={activeSupabaseClient}
                 user={currentUser}
                 canEdit={permissions.role !== 'staff'}
                 canExport={permissions.allowExport}
@@ -3161,7 +3169,7 @@ function MainApp() {
 
             {activeTab === 'expiry' && canSeeTab('expiry') && (
               <ExpiryControlTab
-                client={supabaseClient}
+                client={activeSupabaseClient}
                 user={currentUser}
                 canDelete={
                   permissions.role === 'store_manager' ||
@@ -3178,7 +3186,7 @@ function MainApp() {
 
             {activeTab === 'returns' && canSeeTab('returns') && (
               <GoodsReturnTab
-                client={supabaseClient}
+                client={activeSupabaseClient}
                 user={currentUser}
                 canDelete={
                   permissions.role === 'store_manager' ||
@@ -3195,7 +3203,7 @@ function MainApp() {
 
             {activeTab === 'promotions' && canSeeTab('promotions') && (
               <PromotionsTab
-                client={supabaseClient}
+                client={activeSupabaseClient}
                 user={currentUser}
                 canEdit={permissions.role !== 'staff'}
                 canDelete={
@@ -3255,7 +3263,7 @@ function MainApp() {
 
             {activeTab === 'storage' && canSeeTab('storage') && (
               <StorageManagerTab
-                client={supabaseClient}
+                client={activeSupabaseClient}
                 user={currentUser}
                 canManageAll={
                   permissions.role === 'store_manager' ||
@@ -3271,7 +3279,7 @@ function MainApp() {
 
             {activeTab === 'settings' && canSeeTab('settings') && (
               <SettingsTab
-                client={supabaseClient}
+                client={activeSupabaseClient}
                 actorEmail={currentUser.email}
                 isStoreManager={isStoreManager}
                 leaveRules={leaveRules}

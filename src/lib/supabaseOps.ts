@@ -2,6 +2,7 @@ import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 import { useEffect } from 'react';
 import { appCache } from './cache';
 import { normalizeEmail } from './permissions';
+import { formatSupabaseWriteError, requireAuthenticatedSession } from './supabase';
 import type {
   AttendanceNoteEntry,
   AttendanceRecord,
@@ -110,6 +111,9 @@ export async function saveLeaveRules(
   rules: LeaveRulesConfig,
   actorEmail: string
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const { error } = await client.from('system_settings').upsert(
     {
@@ -120,12 +124,20 @@ export async function saveLeaveRules(
         weekend_max_do: rules.weekendMaxDo,
         require_admin_override: rules.requireAdminOverride,
       },
-      updated_by: normalizeEmail(actorEmail),
+      updated_by: authCheck.email || normalizeEmail(actorEmail),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'key' }
   );
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'system_settings',
+        'Không thể lưu cấu hình ngày nghỉ DO.'
+      ),
+    };
+  }
   appCache.invalidatePrefix('settings:');
   return {};
 }
@@ -172,6 +184,9 @@ export async function saveShiftDefinition(
     active: boolean;
   }
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const id = shift.id || `shift-${shift.code.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
   const { error } = await client.from('shift_definitions').upsert(
@@ -187,7 +202,15 @@ export async function saveShiftDefinition(
     },
     { onConflict: 'id' }
   );
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'shift_definitions',
+        'Không thể lưu định nghĩa ca làm.'
+      ),
+    };
+  }
   appCache.invalidatePrefix('shifts:');
   return {};
 }
@@ -196,9 +219,20 @@ export async function deleteShiftDefinition(
   client: SupabaseClient,
   id: string
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const { error } = await client.from('shift_definitions').delete().eq('id', id);
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'shift_definitions',
+        'Không thể xóa định nghĩa ca làm.'
+      ),
+    };
+  }
   appCache.invalidatePrefix('shifts:');
   return {};
 }
@@ -325,7 +359,7 @@ export async function fetchUserProfiles(
 
 export async function updateMyProfileDetails(
   client: SupabaseClient,
-  uid: string,
+  _uid: string,
   email: string,
   updates: {
     displayName: string;
@@ -336,10 +370,14 @@ export async function updateMyProfileDetails(
     avatarUrl?: string;
   }
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
+  const actorEmail = authCheck.email || normalizeEmail(email);
   recordClientDbOp();
   const payload: Record<string, unknown> = {
-    id: uid,
-    email: normalizeEmail(email),
+    id: authCheck.userId,
+    email: actorEmail,
     display_name: updates.displayName.trim().slice(0, 120),
     birth_date: updates.birthDate.trim(),
     gender: updates.gender.trim(),
@@ -350,7 +388,15 @@ export async function updateMyProfileDetails(
   if (updates.avatarUrl !== undefined) payload.avatar_url = updates.avatarUrl;
 
   const { error } = await client.from('user_profiles').upsert(payload, { onConflict: 'id' });
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'user_profiles',
+        'Không thể cập nhật hồ sơ cá nhân.'
+      ),
+    };
+  }
   return {};
 }
 
@@ -438,6 +484,10 @@ export async function createAttendanceCheckIn(
     initialNote?: string;
   }
 ): Promise<{ data?: AttendanceRecord; error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
+  const actorEmail = authCheck.email || normalizeEmail(params.ownerEmail);
   recordClientDbOp();
   const id = `att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const notes: AttendanceNoteEntry[] = params.initialNote?.trim()
@@ -447,7 +497,7 @@ export async function createAttendanceCheckIn(
           type: 'note',
           content: params.initialNote.trim(),
           createdAt: new Date().toISOString(),
-          createdBy: normalizeEmail(params.ownerEmail),
+          createdBy: actorEmail,
         },
       ]
     : [];
@@ -457,8 +507,8 @@ export async function createAttendanceCheckIn(
     .insert({
       id,
       schedule_id: params.scheduleId,
-      owner_id: params.ownerId,
-      owner_email: normalizeEmail(params.ownerEmail),
+      owner_id: authCheck.userId,
+      owner_email: actorEmail,
       employee_name: params.employeeName.trim(),
       shift_name: params.shiftName.trim(),
       work_date: params.workDate,
@@ -471,7 +521,15 @@ export async function createAttendanceCheckIn(
     )
     .single();
 
-  if (error || !data) return { error: error?.message || 'Không thể chấm công.' };
+  if (error || !data) {
+    return {
+      error: formatSupabaseWriteError(
+        error?.message,
+        'attendance_logs',
+        'Không thể chấm công.'
+      ),
+    };
+  }
   return { data: mapAttendance(data as Record<string, unknown>) };
 }
 
@@ -486,6 +544,10 @@ export async function appendAttendanceNoteOrCheckout(
     markCheckout?: boolean;
   }
 ): Promise<{ data?: AttendanceRecord; error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
+  const actorEmail = authCheck.email || normalizeEmail(params.actorEmail);
   recordClientDbOp();
   const nextNotes: AttendanceNoteEntry[] = [...record.notesHistory];
   if (params.noteContent.trim()) {
@@ -494,7 +556,7 @@ export async function appendAttendanceNoteOrCheckout(
       type: params.noteType,
       content: params.noteContent.trim(),
       createdAt: new Date().toISOString(),
-      createdBy: normalizeEmail(params.actorEmail),
+      createdBy: actorEmail,
     });
   }
 
@@ -516,7 +578,15 @@ export async function appendAttendanceNoteOrCheckout(
     )
     .single();
 
-  if (error || !data) return { error: error?.message || 'Không thể cập nhật chấm công.' };
+  if (error || !data) {
+    return {
+      error: formatSupabaseWriteError(
+        error?.message,
+        'attendance_logs',
+        'Không thể cập nhật chấm công.'
+      ),
+    };
+  }
   return { data: mapAttendance(data as Record<string, unknown>) };
 }
 
@@ -593,14 +663,18 @@ export async function createCustomerFeedback(
     imageThumbPath: string;
   }
 ): Promise<{ data?: CustomerFeedback; error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
+  const actorEmail = authCheck.email || normalizeEmail(params.ownerEmail);
   recordClientDbOp();
   const id = `fb-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const { data, error } = await client
     .from('customer_feedbacks')
     .insert({
       id,
-      owner_id: params.ownerId,
-      owner_email: normalizeEmail(params.ownerEmail),
+      owner_id: authCheck.userId,
+      owner_email: actorEmail,
       employee_name: params.employeeName.trim(),
       category: params.category,
       product_name: params.productName.trim(),
@@ -613,7 +687,15 @@ export async function createCustomerFeedback(
     )
     .single();
 
-  if (error || !data) return { error: error?.message || 'Không thể lưu ý kiến khách hàng.' };
+  if (error || !data) {
+    return {
+      error: formatSupabaseWriteError(
+        error?.message,
+        'customer_feedbacks',
+        'Không thể lưu ý kiến khách hàng.'
+      ),
+    };
+  }
   return { data: mapFeedback(data as Record<string, unknown>) };
 }
 
@@ -621,9 +703,20 @@ export async function deleteCustomerFeedback(
   client: SupabaseClient,
   id: string
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const { error } = await client.from('customer_feedbacks').delete().eq('id', id);
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'customer_feedbacks',
+        'Không thể xóa ý kiến khách hàng.'
+      ),
+    };
+  }
   return {};
 }
 
@@ -699,6 +792,9 @@ export async function upsertCatalogItem(
   client: SupabaseClient,
   item: Omit<ProductCatalogItem, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const id = item.id || `cat-${item.productCode.trim().replace(/[^a-zA-Z0-9_-]/g, '_')}`;
   const { error } = await client.from('product_catalog').upsert(
@@ -710,12 +806,20 @@ export async function upsertCatalogItem(
       unit: item.unit.trim(),
       price: item.price,
       supplier_name: item.supplierName.trim(),
-      updated_by: normalizeEmail(item.updatedBy),
+      updated_by: authCheck.email || normalizeEmail(item.updatedBy),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'product_code' }
   );
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'product_catalog',
+        'Không thể lưu danh mục hàng hóa.'
+      ),
+    };
+  }
   appCache.invalidatePrefix('catalog:');
   return {};
 }
@@ -725,6 +829,9 @@ export async function batchDeleteCatalogWithCheck(
   items: ProductCatalogItem[]
 ): Promise<{ deleted: number; blockedCodes: string[]; error?: string }> {
   if (items.length === 0) return { deleted: 0, blockedCodes: [] };
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { deleted: 0, blockedCodes: [], error: authCheck.error };
+
   const codes = items.map((i) => i.productCode);
 
   recordClientDbOp(2);
@@ -748,7 +855,17 @@ export async function batchDeleteCatalogWithCheck(
   if (deletableIds.length > 0) {
     recordClientDbOp();
     const { error } = await client.from('product_catalog').delete().in('id', deletableIds);
-    if (error) return { deleted: 0, blockedCodes, error: error.message };
+    if (error) {
+      return {
+        deleted: 0,
+        blockedCodes,
+        error: formatSupabaseWriteError(
+          error.message,
+          'product_catalog',
+          'Không thể xóa danh mục hàng.'
+        ),
+      };
+    }
     appCache.invalidatePrefix('catalog:');
   }
   return { deleted: deletableIds.length, blockedCodes };
@@ -826,6 +943,9 @@ export async function upsertPolicyItem(
   client: SupabaseClient,
   item: Omit<SupplierPolicyItem, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const id =
     item.id ||
@@ -839,12 +959,20 @@ export async function upsertPolicyItem(
       product_name: item.productName.trim(),
       return_policy: item.returnPolicy.trim(),
       warn_months_before: Math.max(0, Math.round(item.warnMonthsBefore || 0)),
-      updated_by: normalizeEmail(item.updatedBy),
+      updated_by: authCheck.email || normalizeEmail(item.updatedBy),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'id' }
   );
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'supplier_policies',
+        'Không thể lưu chính sách đổi trả NCC.'
+      ),
+    };
+  }
   appCache.invalidatePrefix('policies:');
   return {};
 }
@@ -854,9 +982,20 @@ export async function deletePoliciesBatch(
   ids: string[]
 ): Promise<{ error?: string }> {
   if (ids.length === 0) return {};
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const { error } = await client.from('supplier_policies').delete().in('id', ids);
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'supplier_policies',
+        'Không thể xóa chính sách đổi trả NCC.'
+      ),
+    };
+  }
   appCache.invalidatePrefix('policies:');
   return {};
 }
@@ -932,6 +1071,9 @@ export async function upsertExpiryItem(
   client: SupabaseClient,
   item: Omit<ExpiryTrackingItem, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const id = item.id || `exp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const { error } = await client.from('expiry_tracking').upsert(
@@ -948,12 +1090,20 @@ export async function upsertExpiryItem(
       exp_date: item.expDate.trim(),
       pt_code: item.ptCode.trim(),
       note: item.note.trim(),
-      updated_by: normalizeEmail(item.updatedBy),
+      updated_by: authCheck.email || normalizeEmail(item.updatedBy),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'id' }
   );
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'expiry_tracking',
+        'Không thể lưu thông tin hạn sử dụng.'
+      ),
+    };
+  }
   return {};
 }
 
@@ -962,9 +1112,20 @@ export async function deleteExpiryBatch(
   ids: string[]
 ): Promise<{ error?: string }> {
   if (ids.length === 0) return {};
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const { error } = await client.from('expiry_tracking').delete().in('id', ids);
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'expiry_tracking',
+        'Không thể xóa bản ghi hạn sử dụng.'
+      ),
+    };
+  }
   return {};
 }
 
@@ -1037,6 +1198,9 @@ export async function upsertReturnRecord(
   client: SupabaseClient,
   item: Omit<ReturnRecordItem, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const id = item.id || `ret-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const { error } = await client.from('return_records').upsert(
@@ -1050,12 +1214,20 @@ export async function upsertReturnRecord(
       reported_date: item.reportedDate.trim(),
       completed_date: item.progress === 'completed' ? item.completedDate.trim() : '',
       last_update_note: item.lastUpdateNote.trim(),
-      updated_by: normalizeEmail(item.updatedBy),
+      updated_by: authCheck.email || normalizeEmail(item.updatedBy),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'id' }
   );
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'return_records',
+        'Không thể lưu hồ sơ đổi trả hàng hóa.'
+      ),
+    };
+  }
   return {};
 }
 
@@ -1064,9 +1236,20 @@ export async function deleteReturnRecords(
   ids: string[]
 ): Promise<{ error?: string }> {
   if (ids.length === 0) return {};
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const { error } = await client.from('return_records').delete().in('id', ids);
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'return_records',
+        'Không thể xóa hồ sơ đổi trả hàng hóa.'
+      ),
+    };
+  }
   return {};
 }
 
@@ -1147,6 +1330,9 @@ export async function upsertPromotionItem(
   client: SupabaseClient,
   item: Omit<PromotionItem, 'id' | 'promoPrice' | 'createdAt' | 'updatedAt'> & { id?: string }
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const id = item.id || `promo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const { error } = await client.from('promotions').upsert(
@@ -1163,12 +1349,20 @@ export async function upsertPromotionItem(
       regular_price: Math.max(0, Number(item.regularPrice)),
       pt_code: item.ptCode.trim(),
       status: item.status,
-      updated_by: normalizeEmail(item.updatedBy),
+      updated_by: authCheck.email || normalizeEmail(item.updatedBy),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'id' }
   );
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'promotions',
+        'Không thể lưu chương trình khuyến mãi.'
+      ),
+    };
+  }
   return {};
 }
 
@@ -1177,9 +1371,20 @@ export async function deletePromotionsBatch(
   ids: string[]
 ): Promise<{ error?: string }> {
   if (ids.length === 0) return {};
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const { error } = await client.from('promotions').delete().in('id', ids);
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'promotions',
+        'Không thể xóa chương trình khuyến mãi.'
+      ),
+    };
+  }
   return {};
 }
 
@@ -1198,14 +1403,18 @@ function classifyMimeCategory(name: string, mime: string): StorageFileEntry['cat
 
 export async function uploadMediaPairToStorage(
   client: SupabaseClient,
-  uid: string,
+  _uid: string,
   folder: 'avatars' | 'feedback',
   mainBlob: Blob,
   thumbBlob?: Blob
 ): Promise<{ path: string; thumbPath: string; error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { path: '', thumbPath: '', error: authCheck.error };
+
+  const ownerFolder = authCheck.userId;
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const ext = mainBlob.type.includes('webp') ? 'webp' : 'jpg';
-  const mainPath = `${uid}/${folder}/${stamp}.${ext}`;
+  const mainPath = `${ownerFolder}/${folder}/${stamp}.${ext}`;
 
   recordClientDbOp();
   const { error: mainErr } = await client.storage
@@ -1217,12 +1426,20 @@ export async function uploadMediaPairToStorage(
     });
 
   if (mainErr) {
-    return { path: '', thumbPath: '', error: mainErr.message };
+    return {
+      path: '',
+      thumbPath: '',
+      error: formatSupabaseWriteError(
+        mainErr.message,
+        'storage.objects',
+        'Không thể tải tệp lên Storage.'
+      ),
+    };
   }
 
   let thumbPath = '';
   if (thumbBlob) {
-    thumbPath = `${uid}/${folder}/${stamp}_thumb.${ext}`;
+    thumbPath = `${ownerFolder}/${folder}/${stamp}_thumb.${ext}`;
     recordClientDbOp();
     const { error: thumbErr } = await client.storage
       .from(STORAGE_BUCKET)
@@ -1334,9 +1551,20 @@ export async function deleteStorageFiles(
   paths: string[]
 ): Promise<{ error?: string }> {
   if (paths.length === 0) return {};
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   recordClientDbOp();
   const { error } = await client.storage.from(bucket).remove(paths);
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'storage.objects',
+        'Không thể xóa tệp trong Storage.'
+      ),
+    };
+  }
   for (const p of paths) {
     appCache.invalidatePrefix(`signed:${p}`);
   }

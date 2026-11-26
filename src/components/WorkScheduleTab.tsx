@@ -434,7 +434,10 @@ export function WorkScheduleTab({
   };
 
   const handleDeleteShiftDef = async (id: string) => {
-    if (!client) return;
+    if (!client) {
+      onNotify('error', 'Cần kích hoạt phiên Supabase Auth để xóa ca.');
+      return;
+    }
     const res = await deleteShiftDefinition(client, id);
     if (res.error) {
       onNotify('error', res.error);

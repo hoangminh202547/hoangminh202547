@@ -6,6 +6,7 @@ import {
 } from '@supabase/supabase-js';
 import schemaSql from '../../supabase/schema.sql?raw';
 import migration002Sql from '../../supabase/migrations/002_full_erp.sql?raw';
+import migration003Sql from '../../supabase/migrations/003_fix_rls_policies.sql?raw';
 import type {
   ActivityAction,
   ActivityLog,
@@ -27,6 +28,7 @@ import { emailToKey, normalizeEmail, normalizeRole } from './permissions';
 
 export const SUPABASE_SCHEMA_SQL = schemaSql;
 export const SUPABASE_MIGRATION_002_SQL = migration002Sql;
+export const SUPABASE_MIGRATION_003_SQL = migration003Sql;
 
 /**
  * In-memory storage adapter for Supabase Auth so auth tokens stay strictly
@@ -1325,14 +1327,57 @@ export type OptimisticUpdateResult<T> =
   | { status: 'conflict'; serverRecord: T | null }
   | { status: 'error'; error: string };
 
+export async function requireAuthenticatedSession(
+  client: SupabaseClient
+): Promise<
+  | { ok: true; userId: string; email: string }
+  | { ok: false; error: string }
+> {
+  const { data, error } = await client.auth.getSession();
+  const user = data?.session?.user;
+  if (error || !user?.id) {
+    return {
+      ok: false,
+      error:
+        'Phiên Supabase Auth chưa được kích hoạt hoặc đã hết hạn. Vui lòng đăng nhập lại trong mục Quản lý Supabase.',
+    };
+  }
+  return {
+    ok: true,
+    userId: user.id,
+    email: normalizeEmail(user.email || ''),
+  };
+}
+
+export function formatSupabaseWriteError(
+  rawMessage: string | undefined,
+  tableName: string,
+  fallbackMessage: string
+): string {
+  const msg = (rawMessage || '').trim();
+  if (!msg) return fallbackMessage;
+  if (
+    /row-level security policy/i.test(msg) ||
+    /permission denied for table/i.test(msg)
+  ) {
+    return `Từ chối quyền ghi (RLS) tại bảng "${tableName}". Hãy kiểm tra tài khoản đã kích hoạt phiên Supabase Auth, có quyền hợp lệ trong user_access và đã chạy script SQL 003_fix_rls_policies.sql trong Supabase SQL Editor.`;
+  }
+  return msg;
+}
+
 export async function upsertUserProfile(
   client: SupabaseClient,
   params: { uid: string; email: string; displayName: string; photoURL?: string }
 ): Promise<void> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return;
+  const email = authCheck.email || normalizeEmail(params.email);
+  if (!email) return;
+
   await client.from('user_profiles').upsert(
     {
-      id: params.uid,
-      email: normalizeEmail(params.email),
+      id: authCheck.userId,
+      email,
       display_name: params.displayName.slice(0, 120),
       avatar_url: (params.photoURL || '').slice(0, 500),
       updated_at: new Date().toISOString(),
@@ -1431,20 +1476,24 @@ export async function createBarcodeScanInSupabase(
     note: string;
   }
 ): Promise<{ data?: BarcodeScan; error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
+  const actorEmail = authCheck.email || normalizeEmail(params.ownerEmail);
   const now = new Date().toISOString();
   const { data, error } = await client
     .from('barcode_scans')
     .insert({
       id: params.id,
-      owner_id: params.ownerId,
-      owner_email: normalizeEmail(params.ownerEmail),
+      owner_id: authCheck.userId,
+      owner_email: actorEmail,
       code: params.code,
       format: params.format,
       session_name: params.sessionName,
       quantity: params.quantity,
       note: params.note,
       version: 1,
-      updated_by: normalizeEmail(params.ownerEmail),
+      updated_by: actorEmail,
       scanned_at: now,
       updated_at: now,
     })
@@ -1452,7 +1501,13 @@ export async function createBarcodeScanInSupabase(
     .single();
 
   if (error || !data) {
-    return { error: error?.message || 'Không thể lưu mã vạch lên Supabase.' };
+    return {
+      error: formatSupabaseWriteError(
+        error?.message,
+        'barcode_scans',
+        'Không thể lưu mã vạch lên Supabase.'
+      ),
+    };
   }
   return { data: mapBarcodeRow(data as Record<string, unknown>) };
 }
@@ -1466,9 +1521,12 @@ export async function updateBarcodeScanWithVersion(
     updates: Partial<{ quantity: number; note: string; sessionName: string }>;
   }
 ): Promise<OptimisticUpdateResult<BarcodeScan>> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { status: 'error', error: authCheck.error };
+
   const dbUpdates: Record<string, unknown> = {
     version: params.expectedVersion + 1,
-    updated_by: normalizeEmail(params.actorEmail),
+    updated_by: authCheck.email || normalizeEmail(params.actorEmail),
     updated_at: new Date().toISOString(),
   };
   if (params.updates.quantity !== undefined) {
@@ -1490,7 +1548,14 @@ export async function updateBarcodeScanWithVersion(
     .maybeSingle();
 
   if (error) {
-    return { status: 'error', error: error.message };
+    return {
+      status: 'error',
+      error: formatSupabaseWriteError(
+        error.message,
+        'barcode_scans',
+        'Không thể cập nhật mã vạch.'
+      ),
+    };
   }
 
   if (!data) {
@@ -1518,8 +1583,19 @@ export async function deleteBarcodeScansInSupabase(
   ids: string[]
 ): Promise<{ error?: string }> {
   if (ids.length === 0) return {};
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   const { error } = await client.from('barcode_scans').delete().in('id', ids);
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'barcode_scans',
+        'Không thể xóa mã vạch.'
+      ),
+    };
+  }
   return {};
 }
 
@@ -1543,11 +1619,15 @@ export async function createWorkScheduleInSupabase(
     note: string;
   }
 ): Promise<{ data?: WorkSchedule; error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
+  const actorEmail = authCheck.email || normalizeEmail(params.ownerEmail);
   const now = new Date().toISOString();
   const payload: Record<string, unknown> = {
     id: params.id,
-    owner_id: params.ownerId,
-    owner_email: normalizeEmail(params.ownerEmail),
+    owner_id: authCheck.userId,
+    owner_email: actorEmail,
     employee_name: params.employeeName,
     title: params.title,
     work_date: params.workDate,
@@ -1560,7 +1640,7 @@ export async function createWorkScheduleInSupabase(
     approved_by: '',
     approved_at: null,
     version: 1,
-    updated_by: normalizeEmail(params.ownerEmail),
+    updated_by: actorEmail,
     created_at: now,
     updated_at: now,
   };
@@ -1577,7 +1657,11 @@ export async function createWorkScheduleInSupabase(
 
   if (error || !data) {
     return {
-      error: error?.message || 'Không thể đăng ký lịch làm việc trên Supabase.',
+      error: formatSupabaseWriteError(
+        error?.message,
+        'work_schedules',
+        'Không thể đăng ký lịch làm việc trên Supabase.'
+      ),
     };
   }
   return { data: mapScheduleRow(data as Record<string, unknown>) };
@@ -1606,10 +1690,14 @@ export async function updateWorkScheduleWithVersion(
     }>;
   }
 ): Promise<OptimisticUpdateResult<WorkSchedule>> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { status: 'error', error: authCheck.error };
+
+  const actorEmail = authCheck.email || normalizeEmail(params.actorEmail);
   const now = new Date().toISOString();
   const dbUpdates: Record<string, unknown> = {
     version: params.expectedVersion + 1,
-    updated_by: normalizeEmail(params.actorEmail),
+    updated_by: actorEmail,
     updated_at: now,
   };
 
@@ -1651,7 +1739,7 @@ export async function updateWorkScheduleWithVersion(
       params.updates.status === 'confirmed' ||
       params.updates.status === 'completed'
     ) {
-      dbUpdates.approved_by = normalizeEmail(params.actorEmail);
+      dbUpdates.approved_by = actorEmail;
       dbUpdates.approved_at = now;
     }
   }
@@ -1665,7 +1753,14 @@ export async function updateWorkScheduleWithVersion(
     .maybeSingle();
 
   if (error) {
-    return { status: 'error', error: error.message };
+    return {
+      status: 'error',
+      error: formatSupabaseWriteError(
+        error.message,
+        'work_schedules',
+        'Không thể cập nhật lịch làm việc.'
+      ),
+    };
   }
 
   if (!data) {
@@ -1692,8 +1787,19 @@ export async function deleteWorkScheduleInSupabase(
   client: SupabaseClient,
   id: string
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   const { error } = await client.from('work_schedules').delete().eq('id', id);
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'work_schedules',
+        'Không thể xóa lịch làm việc.'
+      ),
+    };
+  }
   return {};
 }
 
@@ -1724,6 +1830,9 @@ export async function saveUserAccessInSupabase(
     isEdit: boolean;
   }
 ): Promise<OptimisticUpdateResult<AuthorizedEmail>> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { status: 'error', error: authCheck.error };
+
   const cleanEmail = normalizeEmail(params.email);
   const id = emailToKey(cleanEmail);
   const now = new Date().toISOString();
@@ -1747,7 +1856,7 @@ export async function saveUserAccessInSupabase(
     activity_view: params.activityView,
     allow_supabase: params.allowSupabase,
     note: params.note.slice(0, 300),
-    granted_by: normalizeEmail(params.grantedBy),
+    granted_by: authCheck.email || normalizeEmail(params.grantedBy),
     updated_at: now,
   };
   if (params.modulePerms) {
@@ -1766,7 +1875,16 @@ export async function saveUserAccessInSupabase(
       .select()
       .maybeSingle();
 
-    if (error) return { status: 'error', error: error.message };
+    if (error) {
+      return {
+        status: 'error',
+        error: formatSupabaseWriteError(
+          error.message,
+          'user_access',
+          'Không thể cập nhật phân quyền.'
+        ),
+      };
+    }
     if (!data) {
       const latest = await client
         .from('user_access')
@@ -1803,7 +1921,11 @@ export async function saveUserAccessInSupabase(
   if (error || !data) {
     return {
       status: 'error',
-      error: error?.message || 'Không thể lưu phân quyền trên Supabase.',
+      error: formatSupabaseWriteError(
+        error?.message,
+        'user_access',
+        'Không thể lưu phân quyền trên Supabase.'
+      ),
     };
   }
   return {
@@ -1816,8 +1938,19 @@ export async function deleteUserAccessInSupabase(
   client: SupabaseClient,
   id: string
 ): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
   const { error } = await client.from('user_access').delete().eq('id', id);
-  if (error) return { error: error.message };
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'user_access',
+        'Không thể xóa phân quyền.'
+      ),
+    };
+  }
   return {};
 }
 
@@ -1835,6 +1968,9 @@ export async function appendActivityLog(
     changes?: Record<string, unknown>;
   }
 ): Promise<ActivityLog | null> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return null;
+
   const id =
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
@@ -1842,8 +1978,8 @@ export async function appendActivityLog(
 
   const row = {
     id,
-    actor_id: params.actorId,
-    actor_email: normalizeEmail(params.actorEmail),
+    actor_id: authCheck.userId,
+    actor_email: authCheck.email || normalizeEmail(params.actorEmail),
     actor_name: params.actorName.slice(0, 120),
     actor_role: params.actorRole,
     module: params.module,
@@ -2021,26 +2157,40 @@ export async function pushBarcodeScansToSupabase(
   const client = getSupabaseClient(config);
   if (!client) return { syncedIds: [], error: 'Cấu hình Supabase chưa hợp lệ.' };
 
-  const rows = scans.map((s) => ({
-    id: s.id,
-    owner_id: s.ownerId,
-    owner_email: normalizeEmail(s.ownerEmail),
-    code: s.code,
-    format: s.format,
-    session_name: s.sessionName,
-    quantity: s.quantity,
-    note: s.note || '',
-    version: s.version || 1,
-    updated_by: normalizeEmail(s.updatedBy || s.ownerEmail),
-    scanned_at: s.scannedAt || new Date().toISOString(),
-    updated_at: s.updatedAt || new Date().toISOString(),
-  }));
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { syncedIds: [], error: authCheck.error };
+
+  const rows = scans.map((s) => {
+    const cleanOwnerEmail = normalizeEmail(s.ownerEmail) || authCheck.email;
+    const isSelf = !cleanOwnerEmail || cleanOwnerEmail === authCheck.email;
+    return {
+      id: s.id,
+      owner_id: isSelf ? authCheck.userId : s.ownerId || authCheck.userId,
+      owner_email: cleanOwnerEmail,
+      code: s.code,
+      format: s.format,
+      session_name: s.sessionName,
+      quantity: s.quantity,
+      note: s.note || '',
+      version: s.version || 1,
+      updated_by: normalizeEmail(s.updatedBy || cleanOwnerEmail || authCheck.email),
+      scanned_at: s.scannedAt || new Date().toISOString(),
+      updated_at: s.updatedAt || new Date().toISOString(),
+    };
+  });
 
   const { error } = await client
     .from('barcode_scans')
     .upsert(rows, { onConflict: 'id' });
   if (error) {
-    return { syncedIds: [], error: error.message };
+    return {
+      syncedIds: [],
+      error: formatSupabaseWriteError(
+        error.message,
+        'barcode_scans',
+        'Không thể chuyển dữ liệu mã vạch sang Supabase.'
+      ),
+    };
   }
   return { syncedIds: scans.map((s) => s.id) };
 }
@@ -2053,32 +2203,46 @@ export async function pushSchedulesToSupabase(
   const client = getSupabaseClient(config);
   if (!client) return { syncedIds: [], error: 'Cấu hình Supabase chưa hợp lệ.' };
 
-  const rows = schedules.map((w) => ({
-    id: w.id,
-    owner_id: w.ownerId,
-    owner_email: normalizeEmail(w.ownerEmail),
-    employee_name: w.employeeName,
-    title: w.title,
-    work_date: w.workDate,
-    shift_type: w.shiftType,
-    start_time: w.startTime,
-    end_time: w.endTime,
-    location: w.location || '',
-    status: w.status,
-    note: w.note || '',
-    approved_by: w.approvedBy || '',
-    approved_at: w.approvedAt || null,
-    version: w.version || 1,
-    updated_by: normalizeEmail(w.updatedBy || w.ownerEmail),
-    created_at: w.createdAt || new Date().toISOString(),
-    updated_at: w.updatedAt || new Date().toISOString(),
-  }));
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { syncedIds: [], error: authCheck.error };
+
+  const rows = schedules.map((w) => {
+    const cleanOwnerEmail = normalizeEmail(w.ownerEmail) || authCheck.email;
+    const isSelf = !cleanOwnerEmail || cleanOwnerEmail === authCheck.email;
+    return {
+      id: w.id,
+      owner_id: isSelf ? authCheck.userId : w.ownerId || authCheck.userId,
+      owner_email: cleanOwnerEmail,
+      employee_name: w.employeeName,
+      title: w.title,
+      work_date: w.workDate,
+      shift_type: w.shiftType,
+      start_time: w.startTime,
+      end_time: w.endTime,
+      location: w.location || '',
+      status: w.status,
+      note: w.note || '',
+      approved_by: w.approvedBy || '',
+      approved_at: w.approvedAt || null,
+      version: w.version || 1,
+      updated_by: normalizeEmail(w.updatedBy || cleanOwnerEmail || authCheck.email),
+      created_at: w.createdAt || new Date().toISOString(),
+      updated_at: w.updatedAt || new Date().toISOString(),
+    };
+  });
 
   const { error } = await client
     .from('work_schedules')
     .upsert(rows, { onConflict: 'id' });
   if (error) {
-    return { syncedIds: [], error: error.message };
+    return {
+      syncedIds: [],
+      error: formatSupabaseWriteError(
+        error.message,
+        'work_schedules',
+        'Không thể chuyển dữ liệu lịch làm việc sang Supabase.'
+      ),
+    };
   }
   return { syncedIds: schedules.map((w) => w.id) };
 }
