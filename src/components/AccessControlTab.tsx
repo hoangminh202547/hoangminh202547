@@ -11,13 +11,20 @@ import {
   X,
 } from 'lucide-react';
 import {
+  NAV_ITEMS,
+  ROLE_DEFAULT_MODULES,
   ROLE_DEFAULT_PERMS,
   ROLE_DESCRIPTIONS,
   ROLE_LABELS,
   SUPER_ADMIN_EMAIL,
   normalizeEmail,
 } from '../lib/permissions';
-import type { AuthorizedEmail, ModulePermissions, UserRole } from '../types';
+import type {
+  AuthorizedEmail,
+  ModuleAccessFlags,
+  ModulePermissions,
+  UserRole,
+} from '../types';
 import { ConfirmDialog } from './ConfirmDialog';
 
 export interface SaveMemberParams extends ModulePermissions {
@@ -70,6 +77,9 @@ export function AccessControlTab({
   const [perms, setPerms] = useState<ModulePermissions>(
     ROLE_DEFAULT_PERMS.staff
   );
+  const [moduleFlags, setModuleFlags] = useState<ModuleAccessFlags>({
+    ...ROLE_DEFAULT_MODULES.staff,
+  });
   const [activeInput, setActiveInput] = useState(true);
   const [noteInput, setNoteInput] = useState('');
 
@@ -81,6 +91,7 @@ export function AccessControlTab({
     setNameInput('');
     setRoleInput('staff');
     setPerms({ ...ROLE_DEFAULT_PERMS.staff });
+    setModuleFlags({ ...ROLE_DEFAULT_MODULES.staff });
     setActiveInput(true);
     setNoteInput('');
     setModalOpen(true);
@@ -106,6 +117,10 @@ export function AccessControlTab({
       activityView: member.activityView,
       allowSupabase: member.allowSupabase,
     });
+    setModuleFlags({
+      ...ROLE_DEFAULT_MODULES[member.role],
+      ...(member.modulePerms || {}),
+    });
     setActiveInput(member.active);
     setNoteInput(member.note || '');
     setModalOpen(true);
@@ -114,10 +129,15 @@ export function AccessControlTab({
   const handleRoleChange = (nextRole: UserRole) => {
     setRoleInput(nextRole);
     setPerms({ ...ROLE_DEFAULT_PERMS[nextRole] });
+    setModuleFlags({ ...ROLE_DEFAULT_MODULES[nextRole] });
   };
 
   const togglePerm = (key: keyof ModulePermissions) => {
     setPerms((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const toggleModuleFlag = (key: keyof ModuleAccessFlags) => {
+    setModuleFlags((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -139,6 +159,7 @@ export function AccessControlTab({
         displayName: nameInput.trim(),
         role: roleInput,
         ...perms,
+        modulePerms: moduleFlags,
         active: activeInput,
         note: noteInput.trim(),
         expectedVersion: editingMember?.version,
@@ -632,6 +653,29 @@ export function AccessControlTab({
                     Quản trị đồng bộ Supabase
                   </span>
                 </label>
+              </div>
+
+              {/* Granular Module Access Visibility */}
+              <div className="border border-slate-200 rounded-lg p-3.5 space-y-2">
+                <span className="block text-xs font-bold text-slate-800 uppercase tracking-wide">
+                  Phân quyền hiển thị theo phân hệ (Menu 3 nhóm)
+                </span>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {NAV_ITEMS.map((item) => (
+                    <label
+                      key={item.id}
+                      className="min-h-[38px] flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-slate-200 cursor-pointer hover:bg-slate-50"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={Boolean(moduleFlags[item.id])}
+                        onChange={() => toggleModuleFlag(item.id)}
+                        className="h-4 w-4 accent-blue-600"
+                      />
+                      <span className="text-xs text-slate-800 truncate">{item.label}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
 
               <label className="min-h-[44px] flex items-center gap-3 px-3.5 py-2.5 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50">

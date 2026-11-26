@@ -1,0 +1,1429 @@
+# MASTER PROMPT – XÂY DỰNG APP WEB QUẢN LÝ VẬN HÀNH, HÀNG HÓA VÀ DỮ LIỆU
+
+Hãy xây dựng một ứng dụng web quản lý nội bộ hoàn chỉnh, chuyên nghiệp, tối ưu hiệu năng, tiết kiệm tối đa tài nguyên Supabase, sử dụng thuận tiện trên máy tính, tablet và điện thoại.
+
+Hãy triển khai trực tiếp ứng dụng, không chỉ tạo bản demo giao diện.
+
+---
+
+# I. MỤC TIÊU VÀ KIẾN TRÚC
+
+Xây dựng ứng dụng web nội bộ gồm 3 nhóm chức năng chính:
+
+1. Vận hành.
+2. Hàng hóa.
+3. Hệ thống & dữ liệu.
+
+Yêu cầu:
+
+- Giao diện tiếng Việt.
+- Giao diện hiện đại, tối giản, dễ sử dụng.
+- Responsive hoàn toàn trên desktop, tablet, mobile.
+- Mobile-first, nhưng tối ưu đầy đủ cho desktop.
+- Tích hợp Supabase làm Backend.
+- Đăng nhập Google OAuth thông qua Supabase Auth.
+- Bảo mật bằng RLS.
+- Phân quyền theo vai trò.
+- Tối ưu Database, Bandwidth, Storage, Realtime.
+- Không tạo dữ liệu giả để thay thế dữ liệu thật.
+- Không tạo các chức năng chỉ có giao diện nhưng không hoạt động.
+- Tất cả module phải sử dụng dữ liệu thống nhất.
+- Các module có liên quan phải tự đồng bộ khi dữ liệu thay đổi.
+- Thiết kế theo hướng dễ bảo trì, dễ mở rộng và dễ nâng cấp.
+- Không xây dựng những chức năng dư thừa làm tăng tài nguyên sử dụng.
+
+# II. ĐĂNG NHẬP VÀ XÁC THỰC
+
+## 1. Màn hình chờ đăng nhập
+
+Trước khi đăng nhập, chỉ hiển thị:
+
+- Logo hoặc ảnh đại diện ứng dụng.
+- Tên ứng dụng.
+- Nút Đăng nhập bằng Google.
+
+Không hiển thị Dashboard, dữ liệu nội bộ, menu hoặc các module trước khi đăng nhập.
+
+Thiết kế màn hình đăng nhập tối giản, chuyên nghiệp, responsive.
+
+## 2. Supabase Authentication
+
+Tích hợp Google OAuth thông qua Supabase Auth.
+
+Yêu cầu:
+
+- Sử dụng Supabase Authentication.
+- Google Provider phải được bật và cấu hình đúng.
+- Sử dụng OAuth Redirect URL phù hợp.
+- Xử lý callback.
+- Kiểm tra session.
+- Tự khôi phục session khi tải lại trang.
+- Đăng xuất.
+- Xử lý session hết hạn.
+- Xử lý lỗi đăng nhập.
+- Không tạo tài khoản tự do cho người không được phép sử dụng app.
+- Có cơ chế kiểm tra Email được phép truy cập.
+- Không để người dùng tự nâng cấp quyền.
+- Không sử dụng dữ liệu Email frontend làm cơ chế bảo mật duy nhất.
+
+Nếu Google Provider hoặc Redirect URL chưa cấu hình, hãy hướng dẫn rõ cấu hình trong Supabase Dashboard và Google Cloud Console, không giả lập đăng nhập thành công.
+
+## 3. Phân quyền
+
+Tạo hệ thống phân quyền gồm các vai trò:
+
+- Nhân viên.
+- Trưởng ca.
+- Giám sát.
+- Quản trị.
+
+Phân quyền phải được kiểm tra trên cả giao diện và Database bằng RLS, không chỉ ẩn nút trên giao diện.
+
+---
+
+# III. GIAO DIỆN VÀ RESPONSIVE
+
+## 1. Giao diện chung
+
+Thiết kế:
+
+- Giao diện hiện đại.
+- Màu sắc chuyên nghiệp.
+- Tối giản.
+- Không quá nhiều hiệu ứng.
+- Dễ nhìn.
+- Dễ thao tác.
+- Có hệ thống icon thống nhất.
+- Có trạng thái loading, empty, error.
+- Có thông báo thành công và thất bại.
+- Có xác nhận trước thao tác nguy hiểm.
+- Có thể thu gọn bộ lọc.
+- Có thể thu gọn các form thêm dữ liệu.
+- Có thể thu gọn sidebar.
+- Có thể lưu các tùy chọn giao diện phù hợp.
+
+## 2. Desktop
+
+Tối ưu màn hình 1024px trở lên.
+
+- Sidebar bên trái.
+- Header tối giản.
+- Sidebar có thể thu gọn.
+- Bảng dữ liệu sử dụng tối đa diện tích.
+- Bảng hỗ trợ cuộn ngang khi cần.
+- Có thể cố định các cột quan trọng.
+- Hỗ trợ tìm kiếm.
+- Hỗ trợ lọc.
+- Hỗ trợ sắp xếp.
+- Hỗ trợ thao tác bàn phím.
+- Form bố trí hợp lý.
+- Không có nội dung tràn màn hình.
+- Không sử dụng khoảng trắng quá mức.
+- Có thể hiển thị nhiều dữ liệu cùng lúc.
+
+## 3. Tablet
+
+- Sidebar có thể thu gọn.
+- Menu thích ứng.
+- Bảng có thể cuộn ngang.
+- Form dễ thao tác.
+- Bộ lọc dễ mở và đóng.
+- Không yêu cầu zoom để sử dụng.
+
+## 4. Mobile
+
+Tối ưu màn hình 360px, 375px, 390px, 430px và các kích thước phổ biến khác.
+
+- Thiết kế mobile-first.
+- Menu drawer hoặc bottom navigation.
+- Header tối giản.
+- Nút chạm đủ lớn.
+- Không tràn ngang toàn trang.
+- Không bắt buộc zoom.
+- Form dễ nhập bằng một tay.
+- Bảng dữ liệu rộng chuyển thành card, danh sách hoặc bảng cuộn ngang có kiểm soát.
+- Các thông tin quan trọng hiển thị trước.
+- Chi tiết có thể mở rộng.
+- Bộ lọc dạng drawer hoặc popup.
+- Modal có thể cuộn.
+- Dropdown không bị che.
+- Hỗ trợ safe area.
+- Hỗ trợ bàn phím điện thoại.
+- Không phụ thuộc hover.
+- Nút thêm, lưu, xác nhận, xóa dễ thao tác.
+- Các thao tác xóa phải có xác nhận rõ ràng.
+
+## 5. Responsive theo từng module
+
+- Lịch làm việc: mobile hiển thị lịch theo ngày hoặc nhân sự, không ép lịch 7 ngày vào màn hình nhỏ.
+- Chấm công: nút xác nhận ca rõ ràng, thời gian dễ nhìn.
+- Ý kiến khách hàng: form đơn giản, chọn ảnh, xem trước ảnh, upload ảnh nén.
+- Hàng hóa: ưu tiên quét mã vạch bằng camera, form nhập dễ thao tác.
+- Hạn sử dụng: danh sách card hoặc bảng cuộn ngang.
+- Đổi trả: card dễ xem trạng thái.
+- Khuyến mãi: card hoặc bảng cuộn ngang.
+- Quản lý Storage: hiển thị danh sách file, dung lượng, lựa chọn file, xóa file có xác nhận.
+- Quản lý Supabase: dashboard tài nguyên thích ứng với màn hình.
+
+---
+
+# IV. NHÓM CHỨC NĂNG 1: VẬN HÀNH
+
+## MODULE 1: TỔNG QUAN
+
+Dashboard tổng quan hiển thị:
+
+- Lời chào.
+- Tên nhân sự.
+- Ngày hiện tại.
+- Lịch làm việc hiện tại.
+- Trạng thái chấm công.
+- Số lượng ý kiến khách hàng đã gửi trong ngày.
+- Thông tin tổng hợp từ các module.
+- Các cảnh báo cần xử lý.
+- Các thông tin liên quan đến công việc.
+
+Dashboard phải tối giản.
+
+Không tải toàn bộ dữ liệu của tất cả module để tạo Dashboard.
+
+Chỉ truy vấn dữ liệu tổng hợp cần thiết.
+
+Không tạo các biểu đồ hoặc thống kê dư thừa làm tăng truy vấn.
+
+## MODULE 2: LỊCH LÀM VIỆC
+
+### 1. Đăng ký lịch làm việc
+
+Tích hợp đăng ký lịch làm việc theo các nguyên tắc:
+
+- Mỗi nhân sự được đăng ký tối đa 2 ngày nghỉ DO trong một tuần.
+- Ngày nghỉ DO từ Thứ 2 đến Thứ 6: tối đa 2 người/ngày.
+- Thứ 7 và Chủ nhật: tối đa 1 người/ngày.
+- Nếu vượt quá số lượng nghỉ cuối tuần, yêu cầu vai trò Quản trị duyệt.
+- Không cho phép đăng ký vượt quá quy định nếu chưa được duyệt.
+- Có trạng thái đăng ký.
+- Có trạng thái duyệt.
+- Có thông báo khi đăng ký thành công hoặc không hợp lệ.
+- Kiểm tra giới hạn trên Database để tránh nhiều người đăng ký đồng thời làm vượt số lượng.
+
+Định nghĩa tuần thống nhất từ Thứ 2 đến Chủ nhật.
+
+Các giới hạn đăng ký phải có cấu hình nếu Quản trị cần thay đổi trong tương lai.
+
+### 2. Thiết lập ca làm việc
+
+Có chức năng thiết lập ca làm việc.
+
+Quản trị hoặc người có quyền có thể:
+
+- Thêm ca.
+- Sửa ca.
+- Xóa ca khi không còn được sử dụng hoặc có xác nhận.
+- Thiết lập tên ca.
+- Thiết lập giờ bắt đầu.
+- Thiết lập giờ kết thúc.
+- Thiết lập các thông tin liên quan nếu cần.
+
+Không tạo ca làm việc trùng lặp hoặc không hợp lệ.
+
+### 3. Tổng hợp và lịch tuần chính thức
+
+Hiển thị lịch tuần chính thức dạng bảng.
+
+- Nhân sự theo hàng.
+- Ngày theo cột.
+- Ca làm việc theo từng ngày.
+- Có thể nhập chọn ca.
+- Có thể cập nhật lịch.
+- Có thể lọc theo Họ và tên.
+- Có thể lọc theo Ca làm việc.
+- Có thể sắp xếp nhân sự.
+- Có thể sắp xếp theo ca.
+- Có thể xem lịch tuần.
+- Có thể chuyển tuần.
+- Có thể xem lịch chính thức.
+- Đồng bộ lịch hiển thị cho từng nhân sự.
+- Nhân sự chỉ xem dữ liệu được phép.
+- Quản trị và Giám sát có quyền thao tác phù hợp.
+
+Có thể xuất ảnh lịch làm việc.
+
+Ảnh xuất ra phải dễ đọc, bố cục phù hợp, không chụp toàn bộ màn hình trình duyệt.
+
+### 4. Phân quyền lịch làm việc
+
+- Nhân viên: đăng ký lịch, xem lịch cá nhân, xem lịch chính thức theo quyền.
+- Trưởng ca: quản lý các thao tác được giao.
+- Giám sát: thao tác tất cả chức năng lịch.
+- Quản trị: cấu hình, duyệt, quản lý toàn bộ.
+
+## MODULE 3: THEO DÕI CHẤM CÔNG
+
+### 1. Xác nhận ca
+
+- Xác nhận ca theo lịch.
+- Xác nhận ca ngoài lịch.
+- Ghi nhận thời gian thực tế tại thời điểm nhấn xác nhận.
+- Thời gian ghi nhận phải lấy từ server hoặc nguồn thời gian đáng tin cậy.
+- Không cho phép frontend tự sửa thời gian xác nhận.
+- Có thể ghi nhận ca ngoài lịch nếu được phép.
+- Có kiểm tra chống xác nhận trùng.
+- Có thông báo khi xác nhận thành công.
+
+### 2. Ghi chú ca
+
+- Ghi chú tăng ca.
+- Ghi chú xin về sớm.
+- Ghi chú các trường hợp phát sinh.
+- Có thể ghi chú sau thời điểm xác nhận ca.
+- Lưu người tạo ghi chú.
+- Lưu thời điểm ghi chú.
+- Có lịch sử ghi chú nếu cần.
+- Không ghi đè lịch sử cũ một cách mất kiểm soát.
+
+### 3. Bảng chấm công
+
+Hiển thị theo:
+
+- Ngày.
+- Tháng.
+- Năm.
+
+Có:
+
+- Bộ lọc.
+- Tìm kiếm.
+- Tổng hợp công.
+- Thống kê đơn giản.
+- Xuất Excel khi được yêu cầu.
+
+### 4. Phân quyền chấm công
+
+- Nhân viên: xác nhận ca và ghi chú ca của mình.
+- Trưởng ca: xác nhận ca, ghi chú theo phạm vi được giao.
+- Giám sát: thao tác tất cả.
+- Quản trị: quản lý toàn bộ.
+
+## MODULE 4: THÔNG TIN NHÂN SỰ VÀ PHÂN QUYỀN
+
+### 1. Hồ sơ cá nhân
+
+Thông tin gồm:
+
+- Ảnh đại diện.
+- Họ và tên.
+- Ngày sinh.
+- Giới tính.
+- Số điện thoại.
+- Email.
+
+Email được lấy từ tài khoản đăng nhập và không được tự ý sửa bằng form hồ sơ.
+
+Họ và tên có thể tùy chỉnh.
+
+Ảnh đại diện có thể cập nhật.
+
+### 2. Danh sách nhân sự
+
+Hiển thị toàn bộ nhân sự được phép xem.
+
+- Ảnh đại diện.
+- Họ và tên.
+- Email.
+- Vai trò.
+- Trạng thái.
+- Các thông tin phù hợp.
+
+### 3. Phân quyền theo Email
+
+Quản trị có thể:
+
+- Thêm Email được phép truy cập.
+- Gán vai trò.
+- Thay đổi vai trò.
+- Tạm ngưng quyền.
+- Thu hồi quyền.
+- Kiểm tra danh sách nhân sự.
+- Kiểm tra trạng thái tài khoản.
+
+Không cho phép người dùng tự gán quyền.
+
+RLS phải kiểm soát quyền thực tế.
+
+## MODULE 5: Ý KIẾN KHÁCH HÀNG
+
+### 1. Gửi ý kiến
+
+Mỗi nhân sự phải gửi tối thiểu 2 ý kiến/ngày.
+
+Form gồm:
+
+- Phân loại: Sản phẩm hoặc Dịch vụ.
+- Nội dung ý kiến.
+- Hình ảnh đính kèm nếu phân loại Sản phẩm.
+- Thời gian gửi thực tế.
+- Nhân sự gửi.
+
+Nếu phân loại Sản phẩm, cho phép đính kèm ảnh sản phẩm.
+
+Nếu phân loại Dịch vụ, không bắt buộc ảnh.
+
+Thời gian gửi được ghi nhận từ server.
+
+### 2. Gửi nhiều ý kiến
+
+- Form mặc định gọn.
+- Có nút thêm ý kiến.
+- Nút thêm ý kiến được thu gọn.
+- Có thể gửi nhiều ý kiến trong ngày.
+- Mỗi ý kiến là một bản ghi riêng.
+- Không giới hạn thao tác thêm nếu hợp lý.
+
+### 3. Bảng theo dõi ý kiến
+
+Hiển thị:
+
+- Thời gian thực tế gửi.
+- Nhân sự.
+- Số lượng ý kiến.
+- Nội dung.
+- Hình ảnh.
+- Trạng thái.
+
+### 4. Tổng hợp
+
+- Tổng hợp theo nhân sự.
+- Hiển thị số lượng ý kiến.
+- Khi bấm vào tên nhân sự, hiển thị toàn bộ ý kiến của nhân sự đó.
+- Có bộ lọc thu gọn theo nhân sự.
+- Có bộ lọc ngày.
+- Có thể xem theo ngày.
+- Có thể xem theo tháng.
+- Mặc định sắp xếp thời gian thực gửi từ cũ đến mới.
+
+### 5. Phân quyền
+
+- Nhân viên gửi ý kiến.
+- Nhân viên xem dữ liệu được phép.
+- Giám sát xem và quản lý toàn bộ.
+- Quản trị quản lý toàn bộ.
+
+### 6. Tối ưu ảnh
+
+- Nén ảnh trước khi upload.
+- Resize phù hợp.
+- WebP nếu phù hợp.
+- Hiển thị thumbnail.
+- Lazy loading.
+- Không tải ảnh gốc trong danh sách.
+- Chỉ tải ảnh lớn khi người dùng mở xem.
+- Có thể xóa ảnh theo quyền.
+- Không upload ảnh không thay đổi.
+
+---
+
+# V. NHÓM CHỨC NĂNG 2: HÀNG HÓA
+
+## MODULE 1: KHO DỮ LIỆU
+
+### A. DANH MỤC HÀNG
+
+Các cột:
+
+- STT.
+- Mã hàng.
+- Mã vạch.
+- Tên hàng.
+- ĐVT.
+- Giá bán.
+- Nhà cung cấp.
+
+### 1. Thêm mới
+
+- Thêm mã hàng mới.
+- Kiểm tra mã hàng trùng.
+- Kiểm tra mã vạch trùng nếu có.
+- Không cho phép dữ liệu không hợp lệ.
+- Có thông báo.
+
+### 2. Xóa hàng loạt
+
+- Cho phép chọn nhiều mã hàng.
+- Xóa hàng loạt.
+- Có xác nhận trước khi xóa.
+- Hiển thị số lượng dự kiến xóa.
+- Không xóa dữ liệu liên quan gây mất tính toàn vẹn.
+- Kiểm tra các dữ liệu liên quan trước khi xóa.
+- Nếu dữ liệu đang được sử dụng, xử lý an toàn hoặc yêu cầu xác nhận phù hợp.
+
+### 3. Cập nhật bằng Excel
+
+- Có file mẫu Excel.
+- Tải file mẫu.
+- Upload file Excel.
+- Preview dữ liệu.
+- Kiểm tra mã hàng.
+- Kiểm tra dữ liệu trùng.
+- Kiểm tra dữ liệu không hợp lệ.
+- Giữ nguyên các mã hàng không có thay đổi.
+- Chỉ cập nhật mã hàng có thông tin thay đổi.
+- Chỉ thêm mã mới khi thực sự mới.
+- Không ghi lại toàn bộ dữ liệu không thay đổi.
+- Không xóa dữ liệu hiện tại nếu file import không có mã đó.
+- Có báo cáo số lượng thêm mới, cập nhật, bỏ qua, lỗi.
+- Có thể xuất Excel.
+
+### B. CHÍNH SÁCH ĐỔI TRẢ NCC
+
+File mẫu gồm:
+
+- STT.
+- Ngành hàng.
+- Tên NCC.
+- Tên NCC HT.
+- Tên hàng hóa.
+- Đổi trả SP.
+
+### 1. Thêm NCC mới
+
+- Thêm nhà cung cấp.
+- Kiểm tra dữ liệu.
+- Không tạo bản ghi trùng nếu có thể xác định.
+
+### 2. Xóa hàng loạt
+
+- Chọn nhiều bản ghi.
+- Có xác nhận.
+- Kiểm tra dữ liệu liên quan.
+
+### 3. Cập nhật bằng Excel
+
+- Có file mẫu.
+- Upload Excel.
+- Preview.
+- Kiểm tra dữ liệu.
+- Giữ nguyên dữ liệu không thay đổi.
+- Chỉ cập nhật các bản ghi có thay đổi.
+- Không xóa dữ liệu không có trong file.
+- Có báo cáo import.
+- Có thể xuất Excel.
+
+## MODULE 2: QUÉT VÀ XUẤT MÃ VẠCH
+
+- Sử dụng camera thiết bị khi được cấp quyền.
+- Hỗ trợ quét mã vạch liên tục.
+- Hỗ trợ các loại mã vạch phù hợp.
+- Tối ưu khung quét.
+- Hỗ trợ bắt nét.
+- Có thể điều chỉnh vùng quét nếu thư viện hỗ trợ.
+- Hạn chế quét trùng liên tục cùng mã.
+- Cho phép tạm dừng quét.
+- Cho phép tiếp tục quét.
+- Cho phép nhập mã bằng bàn phím.
+- Có danh sách mã đã quét.
+- Có thể xóa mã.
+- Có thể xóa hàng loạt.
+- Có xác nhận trước khi xóa.
+- Có thể xuất Excel.
+
+Không upload hình camera liên tục lên Supabase.
+
+Ưu tiên xử lý nhận dạng mã vạch tại thiết bị nếu thư viện hỗ trợ.
+
+Không sử dụng các request liên tục không cần thiết.
+
+## MODULE 3: KIỂM SOÁT HẠN SỬ DỤNG
+
+### 1. Bảng dữ liệu
+
+Hiển thị:
+
+- STT.
+- Tên NCC HT.
+- Mã hàng.
+- Mã vạch.
+- Tên hàng.
+- ĐVT.
+- Ngày sản xuất.
+- Hạn sử dụng.
+- Đổi trả SP.
+- Ghi chú & cảnh báo.
+- PT.
+
+### 2. Truy xuất
+
+Khi nhập Mã hàng:
+
+- Tên NCC HT.
+- Mã vạch.
+- Tên hàng.
+- ĐVT.
+
+Khi nhập Tên NCC HT:
+
+- Đổi trả SP.
+
+Thông tin được truy xuất từ kho dữ liệu và chính sách đổi trả.
+
+Không tạo dữ liệu trùng lặp nếu có thể sử dụng dữ liệu nguồn.
+
+### 3. Cảnh báo hạn sử dụng
+
+- Tính toán theo ngày thực tế.
+- Hiển thị cảnh báo hạn sử dụng.
+- Hiển thị cảnh báo theo chính sách báo trước của nhà cung cấp.
+- Có thể thiết lập số tháng báo trước nếu dữ liệu chính sách hỗ trợ.
+- Có cảnh báo hàng hết hạn.
+- Có cảnh báo hàng sắp hết hạn.
+- Có cảnh báo hàng cần xử lý đổi trả.
+- Không tự động xóa dữ liệu.
+
+### 4. Nhập và xuất
+
+- File mẫu Excel.
+- Có thể tải file mẫu.
+- Có thể xuất dữ liệu để bổ sung.
+- Có thể import.
+- Preview.
+- Kiểm tra dữ liệu.
+- Không ghi đè không cần thiết.
+- Không tạo bản ghi trùng.
+- Có báo cáo import.
+
+### 5. Giao diện
+
+- Nút thêm dòng thu gọn.
+- Thanh trạng thái module thu gọn.
+- Bộ lọc thu gọn theo:
+  - PT.
+  - Cảnh báo.
+  - Mã hàng.
+  - Mã vạch.
+  - Tên NCC.
+- Tự động đồng bộ khi kho dữ liệu thay đổi.
+- Mặc định sắp xếp hạn sử dụng gần nhất đến xa nhất.
+- Xuất ảnh.
+- Xuất PDF.
+- Xuất Excel.
+
+### 6. Đồng bộ
+
+Khi danh mục hàng hoặc chính sách đổi trả thay đổi:
+
+- Đồng bộ thông tin liên quan.
+- Không tải toàn bộ dữ liệu nếu chỉ một mã hàng thay đổi.
+- Chỉ cập nhật bản ghi liên quan.
+- Tối ưu Realtime.
+
+## MODULE 4: ĐỔI TRẢ HÀNG HÓA
+
+### 1. Bảng nhập
+
+Các cột:
+
+- STT.
+- PT.
+- Tên NCC HT.
+- Hàng đổi trả.
+- Hình thức.
+- Tiến độ.
+- Báo đổi trả (Ngày/tháng/năm).
+
+### 2. Tiến độ
+
+- Đang xử lý.
+- Đã xử lý.
+
+Khi chọn Đã xử lý, bổ sung thông tin ngày xử lý.
+
+### 3. Thông báo cập nhật
+
+Có dòng thông báo:
+
+- Thời gian cập nhật.
+- Người cập nhật.
+- Nội dung cập nhật.
+
+Thông tin được ghi nhận thực tế.
+
+### 4. Bộ lọc
+
+Bộ lọc thu gọn:
+
+- Tên NCC HT.
+- Hàng đổi trả.
+- Hình thức.
+- PT.
+
+### 5. Chức năng
+
+- Thêm dòng thu gọn.
+- Sửa dữ liệu.
+- Cập nhật tiến độ.
+- Xuất ảnh.
+- Xuất PDF.
+- Xuất Excel.
+- Phân quyền phù hợp.
+
+## MODULE 5: CHƯƠNG TRÌNH KHUYẾN MÃI
+
+### 1. Bảng thông tin
+
+Các cột:
+
+- STT.
+- Mã hàng.
+- Mã vạch.
+- Tên hàng.
+- ĐVT.
+- HSD.
+- Số lượng.
+- Tỷ lệ KM (%).
+- Giá bán.
+- Giá KM.
+- Trạng thái.
+
+Giá KM được tính:
+
+Giá KM = Giá bán × (1 - Tỷ lệ KM / 100).
+
+Không tính sai công thức giảm giá.
+
+### 2. File mẫu
+
+Excel gồm:
+
+- STT.
+- Mã hàng.
+- Mã vạch.
+- Tên hàng.
+- ĐVT.
+- HSD.
+- Số lượng.
+- Tỷ lệ KM (%).
+- Giá bán.
+
+### 3. Cập nhật bằng Excel
+
+- Upload file mẫu.
+- Preview.
+- Kiểm tra dữ liệu.
+- Giữ nguyên mã hàng không thay đổi.
+- Chỉ cập nhật mã hàng có thay đổi.
+- Chỉ thêm bản ghi mới khi cần.
+- Không xóa dữ liệu không có trong file.
+- Cảnh báo trùng khi mã hàng, HSD và tỷ lệ KM giống dữ liệu hiện tại.
+- Có báo cáo import.
+- Có thể xuất Excel.
+
+### 4. Tên hàng có ký tự (B)
+
+Nếu tên hàng chứa ký tự cuối tên là (B):
+
+- Tự động loại bỏ ký tự (B) ở cuối tên.
+- Hiển thị biểu tượng B ở cuối tên hàng.
+- Có thể lọc theo biểu tượng B.
+- Không xóa ký tự B nằm ở vị trí khác.
+- Không làm thay đổi mã hàng.
+
+### 5. Bộ lọc
+
+Bộ lọc thu gọn:
+
+- PT.
+- Chứa biểu tượng B.
+- Trạng thái.
+- Mã hàng.
+- Mã vạch.
+- Tên hàng.
+
+Nếu người dùng không còn thao tác trên module, tự động trả bộ lọc về trạng thái tất cả theo quy tắc thống nhất, tránh reset khi người dùng đang thao tác.
+
+### 6. Đồng bộ
+
+- Đồng bộ khi kho dữ liệu thay đổi.
+- Không truy vấn toàn bộ dữ liệu nếu chỉ một mã hàng thay đổi.
+- Chỉ cập nhật bản ghi liên quan.
+- Mặc định sắp xếp HSD gần đến xa.
+- Xuất ảnh.
+- Xuất PDF.
+- Xuất Excel.
+- Nút thêm dòng thu gọn.
+
+---
+
+# VI. NHÓM CHỨC NĂNG 3: HỆ THỐNG VÀ DỮ LIỆU
+
+## MODULE 1: QUẢN LÝ SUPABASE VÀ GIÁM SÁT TÀI NGUYÊN
+
+### 1. Quản lý Supabase
+
+Tạo module quản lý:
+
+- Cấu hình Supabase.
+- Trạng thái kết nối.
+- RLS.
+- Realtime.
+- Bảo toàn dữ liệu.
+- Chuyển dữ liệu hiện có sang Supabase.
+- SQL khởi tạo Database.
+- SQL cấu hình RLS.
+- SQL cấu hình Realtime.
+- Quản lý cấu trúc dữ liệu theo quyền phù hợp.
+
+### 2. Cấu hình
+
+- Kiểm tra cấu hình.
+- Hiển thị trạng thái kết nối.
+- Không hiển thị secrets.
+- Không hiển thị service role key.
+- Không cho phép người dùng thông thường chỉnh sửa cấu hình bảo mật.
+- Có hướng dẫn cấu hình khi chưa hoàn tất.
+
+### 3. SQL khởi tạo
+
+Tạo SQL migration rõ ràng, có thể kiểm tra và triển khai.
+
+SQL phải:
+
+- Tạo các bảng cần thiết.
+- Tạo quan hệ.
+- Tạo index phù hợp.
+- Tạo constraints.
+- Cấu hình RLS.
+- Cấu hình policies.
+- Cấu hình Realtime cho các bảng cần thiết.
+- Có thể triển khai theo từng migration.
+- Không phá vỡ dữ liệu đang tồn tại.
+- Không tự xóa dữ liệu.
+- Không tắt RLS.
+- Có hướng dẫn thực hiện trong Supabase SQL Editor.
+
+Không cố gắng thay đổi Database trực tiếp từ frontend.
+
+### 4. Giám sát tài nguyên
+
+Hiển thị các chỉ số sử dụng thực tế:
+
+- Database Size.
+- Egress.
+- Cached Egress.
+- Storage Size.
+- Realtime Messages.
+- Các tài nguyên khác được Supabase hỗ trợ.
+
+Yêu cầu:
+
+- Đọc Usage thực tế từ Supabase.
+- Không lấy số lượng thao tác người dùng để suy ra Egress.
+- Không lấy số request frontend làm Usage thực tế.
+- Không sử dụng số liệu giả.
+- Không tự tạo số liệu nếu không truy xuất được.
+- Nếu không có API phù hợp, hiển thị không khả dụng.
+- Hiển thị nguồn dữ liệu.
+- Hiển thị thời gian cập nhật.
+- Có thể refresh thủ công.
+- Cache dữ liệu Usage phù hợp.
+- Không gọi Usage API liên tục.
+- Bảo vệ API credentials.
+- Chỉ người có quyền được xem.
+
+### 5. Cảnh báo tài nguyên
+
+Cảnh báo khi đạt:
+
+- 70%.
+- 85%.
+- 95%.
+
+Cảnh báo theo từng tài nguyên.
+
+Có:
+
+- Trạng thái.
+- Ngưỡng.
+- Thời điểm.
+- Thông tin tài nguyên.
+- Mức cảnh báo.
+
+Không tạo cảnh báo giả.
+
+### 6. Tổng thao tác trong ngày
+
+Hiển thị số lượng thao tác sử dụng trong ngày nếu có dữ liệu đo thực tế từ hệ thống.
+
+Phân biệt rõ:
+
+- Số thao tác của ứng dụng.
+- Số request.
+- Usage thực tế của Supabase.
+
+Không sử dụng số thao tác làm số liệu Egress.
+
+## MODULE 2: QUẢN LÝ DUNG LƯỢNG STORAGE
+
+### 1. Dashboard Storage
+
+Hiển thị:
+
+- Dung lượng Storage thực tế nếu truy xuất được.
+- Tổng số file.
+- Các bucket.
+- Dung lượng theo bucket nếu có dữ liệu.
+- File lớn.
+- Các loại file.
+- Ảnh.
+- PDF.
+- Excel.
+- Các file khác.
+- Thời điểm cập nhật.
+
+Không tải toàn bộ file để tính dung lượng.
+
+Ưu tiên dữ liệu thống kê từ nguồn có sẵn và metadata.
+
+Nếu không có API phù hợp, hiển thị rõ hạn chế.
+
+### 2. Danh sách file
+
+Hiển thị:
+
+- Tên file.
+- Bucket.
+- Đường dẫn.
+- Loại file.
+- Dung lượng.
+- Ngày upload.
+- Người upload nếu có.
+- Trạng thái.
+- Thumbnail nếu phù hợp.
+
+Có:
+
+- Tìm kiếm.
+- Lọc theo bucket.
+- Lọc theo loại file.
+- Lọc theo dung lượng.
+- Lọc theo ngày.
+- Phân trang.
+- Sắp xếp.
+- Chọn nhiều file.
+
+Không tải file gốc để hiển thị danh sách.
+
+### 3. Xóa file
+
+Có thể:
+
+- Xóa file đơn.
+- Xóa nhiều file.
+- Xóa ảnh không cần thiết.
+- Xóa file cũ.
+- Xóa file theo bộ lọc phù hợp.
+- Có xác nhận trước khi xóa.
+- Hiển thị số lượng file dự kiến xóa.
+- Hiển thị tổng dung lượng dự kiến giải phóng nếu có thể tính chính xác.
+- Có thông báo kết quả.
+- Xử lý lỗi.
+- Không xóa file đang được dữ liệu ứng dụng sử dụng.
+- Không xóa file không thuộc quyền.
+- Không xóa file của người dùng khác nếu chưa có quyền.
+- Không xóa dữ liệu Database liên quan ngoài ý muốn.
+
+### 4. Phát hiện file không còn được sử dụng
+
+Tạo chức năng kiểm tra file Storage không còn được tham chiếu từ Database.
+
+- Đối chiếu file với các bảng đang sử dụng Storage.
+- Không tự động xóa file.
+- Hiển thị danh sách file nghi ngờ không còn sử dụng.
+- Hiển thị lý do.
+- Hiển thị dung lượng.
+- Cho phép lựa chọn.
+- Có xác nhận.
+- Có thể bỏ qua.
+- Không xóa khi chưa xác minh.
+- Không dùng thao tác xóa SQL để xóa file Storage.
+
+### 5. Tối ưu ảnh
+
+- Nén ảnh.
+- Resize.
+- WebP nếu phù hợp.
+- Thumbnail.
+- Lazy loading.
+- Upload theo nhu cầu.
+- Không tải ảnh gốc nếu không cần.
+- Không upload ảnh không thay đổi.
+- Không tạo ảnh dư thừa.
+- Có thể xóa ảnh cũ theo quyền.
+- Có thể quản lý ảnh đính kèm ý kiến khách hàng.
+
+### 6. Bảo mật Storage
+
+- Bucket private khi chứa dữ liệu nội bộ.
+- RLS hoặc policies phù hợp.
+- Signed URL khi cần.
+- Không tạo signed URL quá nhiều.
+- Không sử dụng URL công khai cho dữ liệu nhạy cảm.
+- Không để lộ secrets.
+- Không cho người dùng vượt quyền xóa.
+
+---
+
+# VII. YÊU CẦU TỐI ƯU SUPABASE TOÀN APP
+
+Đây là yêu cầu bắt buộc áp dụng cho tất cả module.
+
+## 1. Query
+
+- Không SELECT *.
+- Chỉ SELECT các cột cần thiết.
+- Pagination mặc định 20 bản ghi.
+- Có thể chọn 20, 50, 100.
+- Không tải toàn bộ bảng khi mở module.
+- Không tải module chưa mở.
+- Không query lặp.
+- Không tạo N+1 query.
+- Không query trong render.
+- Không query từng dòng khi có thể query theo nhóm.
+- Gộp query phù hợp.
+- Tối ưu search.
+- Tối ưu sort.
+- Tối ưu filter.
+- Tạo index theo query thực tế.
+- Không tạo index dư thừa.
+- Không cập nhật dữ liệu không thay đổi.
+
+## 2. Cache
+
+Cache các dữ liệu ít thay đổi:
+
+- Danh mục hàng.
+- Chính sách đổi trả.
+- Cấu hình ca.
+- Các cấu hình.
+- Dữ liệu phù hợp khác.
+
+Yêu cầu:
+
+- Cache có thời hạn.
+- Cache an toàn.
+- Không cache dữ liệu nhạy cảm thiếu an toàn.
+- Invalidation cache theo module.
+- Chỉ invalidation dữ liệu liên quan.
+- Không refresh toàn app.
+- Không query lại khi dữ liệu chưa thay đổi.
+- Có thể tái sử dụng dữ liệu khi chuyển module.
+
+## 3. Search
+
+- Debounce 300–500ms.
+- Hủy request cũ.
+- Không truy vấn mỗi ký tự tức thời.
+- Tìm kiếm tại Database khi dữ liệu lớn.
+- Tối ưu mã hàng.
+- Tối ưu mã vạch.
+- Tối ưu tên hàng.
+- Tối ưu tên nhân sự.
+- Tối ưu nhà cung cấp.
+
+## 4. Import và export
+
+- Import theo batch hợp lý.
+- Preview.
+- Validate.
+- Không ghi toàn bộ dữ liệu nếu không thay đổi.
+- Không xóa dữ liệu ngoài file.
+- Có báo cáo import.
+- Có xử lý lỗi.
+- Có chống trùng.
+- Có thể rollback hoặc xử lý lỗi an toàn.
+- Export chỉ dữ liệu được yêu cầu.
+- Không tải toàn bộ Database nếu chỉ xuất dữ liệu theo bộ lọc.
+
+## 5. Realtime
+
+- Chỉ subscribe module cần thiết.
+- Không subscribe toàn bộ Database.
+- Không subscribe toàn bộ bảng.
+- Không subscribe trùng.
+- Hủy subscription khi rời module.
+- Không duy trì kết nối dư thừa.
+- Chỉ cập nhật dữ liệu liên quan.
+- Không refresh toàn bộ bảng.
+- Không polling liên tục.
+- Có reconnect hợp lý.
+- Không reconnect vô hạn.
+- Không tạo Realtime cho dữ liệu không cần cập nhật tức thời.
+
+## 6. Storage và Egress
+
+- Nén ảnh.
+- Resize ảnh.
+- WebP nếu phù hợp.
+- Thumbnail.
+- Lazy loading.
+- Không tải ảnh gốc trong bảng.
+- Không preload dữ liệu dư thừa.
+- Không tải file hàng loạt.
+- Không tạo signed URL hàng loạt.
+- Không upload ảnh không thay đổi.
+- Không gửi hình camera liên tục.
+- Không tải file để tính Usage.
+
+## 7. Frontend
+
+- Lazy loading module.
+- Lazy loading component lớn.
+- Lazy loading ảnh.
+- Tách code.
+- Không render lại không cần thiết.
+- Giải phóng subscriptions.
+- Hủy request khi component unmount.
+- Hủy request cũ.
+- Tránh memory leak.
+- Tránh event listener dư thừa.
+- Tránh timer dư thừa.
+- Không polling không cần thiết.
+- Không lưu file lớn vào localStorage.
+- Không sử dụng localStorage làm Database chính.
+- Không giữ ảnh full-size trong memory không cần thiết.
+
+## 8. Mạng yếu
+
+- Loading.
+- Error.
+- Empty state.
+- Timeout.
+- Retry có kiểm soát.
+- Không retry vô hạn.
+- Không request lặp.
+- Chống double submit.
+- Không báo thành công khi chưa ghi dữ liệu thành công.
+- Có thông báo lỗi.
+- Có trạng thái mất mạng.
+- Có xử lý mạng trở lại.
+- Chỉ đồng bộ dữ liệu cần thiết.
+- Không làm mất form khi lỗi.
+- Xử lý session hết hạn.
+- Không tự gửi lại thao tác nhạy cảm nếu chưa kiểm tra trạng thái.
+
+---
+
+# VIII. DATABASE, RLS VÀ BẢO MẬT
+
+## 1. Database
+
+Thiết kế Database hợp lý, tránh tạo bảng và dữ liệu dư thừa.
+
+- Primary key.
+- Foreign key.
+- Unique constraints.
+- Index.
+- Check constraints.
+- Timestamp.
+- Quan hệ.
+- Trạng thái.
+- Audit phù hợp.
+
+Không tạo quá nhiều bảng không cần thiết.
+
+Không lưu dữ liệu trùng lặp không cần thiết.
+
+## 2. RLS
+
+Bật RLS cho các bảng dữ liệu nội bộ.
+
+Tạo policies phù hợp theo vai trò.
+
+- Nhân viên chỉ truy cập dữ liệu được phép.
+- Trưởng ca có quyền theo phạm vi.
+- Giám sát có quyền theo quy định.
+- Quản trị có quyền quản lý.
+- Không cho người dùng tự nâng cấp quyền.
+- Không sử dụng frontend làm lớp bảo mật duy nhất.
+
+## 3. Secrets
+
+- Không đưa service role key vào frontend.
+- Không để secrets trong source code.
+- Không đưa secrets vào localStorage.
+- Không hiển thị secrets.
+- Không log secrets.
+- Sử dụng server-side hoặc Edge Functions khi cần.
+- Không dùng quyền cao để bypass RLS tùy tiện.
+- Nếu dùng service role, phải kiểm tra quyền ở server.
+
+## 4. Audit
+
+Ghi nhận các thao tác quan trọng khi cần:
+
+- Người thực hiện.
+- Thời gian.
+- Nội dung thao tác.
+- Bản ghi liên quan.
+
+Không tạo log dư thừa làm tăng tài nguyên không cần thiết.
+
+---
+
+# IX. TỐI ƯU HIỆU NĂNG
+
+## 1. Mục tiêu
+
+Ưu tiên:
+
+- Mở module nhanh.
+- Không tải dữ liệu dư thừa.
+- Không request trùng.
+- Không render dư thừa.
+- Không tải ảnh gốc.
+- Không Realtime dư thừa.
+- Không memory leak.
+- Cache.
+- Pagination.
+- Responsive.
+- Tối ưu code.
+
+## 2. Kiểm tra
+
+Kiểm tra:
+
+- Thời gian mở trang.
+- Thời gian query.
+- Số request.
+- Request trùng.
+- Dung lượng payload.
+- Kích thước ảnh.
+- Render.
+- Memory.
+- Realtime subscriptions.
+- Cache nếu có thể đo.
+- Lỗi console.
+- Lỗi mạng.
+- Các query chậm nếu có dữ liệu đo.
+
+Không bịa số liệu.
+
+Nếu chưa đo, ghi rõ chưa đo.
+
+Không cam kết mức tiết kiệm cụ thể nếu chưa có số liệu thực tế.
+
+---
+
+# X. KIỂM THỬ RESPONSIVE
+
+Kiểm tra:
+
+- 360px.
+- 375px.
+- 390px.
+- 430px.
+- 768px.
+- 1024px.
+- 1280px.
+- 1440px.
+- 1920px.
+
+Kiểm tra:
+
+- Không tràn màn hình.
+- Không mất nội dung.
+- Không có nút quá nhỏ.
+- Không bị che.
+- Không phải zoom.
+- Bảng dữ liệu dễ thao tác.
+- Form dễ nhập.
+- Modal dễ sử dụng.
+- Dropdown không bị che.
+- Menu không bị che.
+- Camera hoạt động phù hợp.
+- Responsive không ảnh hưởng dữ liệu.
+- Responsive không ảnh hưởng quyền.
+- Responsive không ảnh hưởng nghiệp vụ.
+
+---
+
+# XI. CẤU TRÚC MENU
+
+Tạo sidebar thống nhất:
+
+## 1. Vận hành
+
+- Tổng quan.
+- Lịch làm việc.
+- Chấm công.
+- Nhân sự.
+- Ý kiến khách hàng.
+
+## 2. Hàng hóa
+
+- Kho dữ liệu.
+- Quét mã vạch.
+- Kiểm soát hạn sử dụng.
+- Đổi trả hàng hóa.
+- Chương trình khuyến mãi.
+
+## 3. Hệ thống & dữ liệu
+
+- Quản lý Supabase.
+- Giám sát tài nguyên.
+- Quản lý Storage.
+- Cấu hình.
+- Phân quyền.
+
+Menu phải hiển thị theo quyền.
+
+Không hiển thị menu không có quyền truy cập.
+
+---
+
+# XII. YÊU CẦU TRIỂN KHAI
+
+Hãy xây dựng ứng dụng theo hướng:
+
+- Component hóa.
+- Tách module.
+- Tách logic.
+- Tách dữ liệu.
+- Tách quyền.
+- Tách cấu hình.
+- Dễ bảo trì.
+- Dễ mở rộng.
+- Responsive.
+- Tối ưu Supabase.
+
+Không tạo một file code khổng lồ.
+
+Không tạo code trùng lặp.
+
+Không tạo component dư thừa.
+
+Không sử dụng dữ liệu giả trong chức năng thực tế.
+
+Không để các nút không hoạt động.
+
+Không tạo chức năng chỉ để trang trí.
+
+Nếu chưa thể tích hợp API thực tế, phải ghi rõ và tạo hướng dẫn cấu hình, không giả lập thành công.
+
+---
+
+# XIII. QUY TRÌNH THỰC HIỆN
+
+Hãy thực hiện theo các bước:
+
+Bước 1: Kiểm tra môi trường và dự án hiện tại.
+
+Bước 2: Xác định kiến trúc.
+
+Bước 3: Xây dựng giao diện đăng nhập Google.
+
+Bước 4: Xây dựng hệ thống phân quyền.
+
+Bước 5: Xây dựng cấu trúc Database.
+
+Bước 6: Xây dựng RLS và policies.
+
+Bước 7: Xây dựng giao diện responsive.
+
+Bước 8: Xây dựng nhóm Vận hành.
+
+Bước 9: Xây dựng nhóm Hàng hóa.
+
+Bước 10: Xây dựng nhóm Hệ thống & dữ liệu.
+
+Bước 11: Tích hợp Supabase.
+
+Bước 12: Tích hợp Realtime phù hợp.
+
+Bước 13: Tối ưu Database, Bandwidth và Storage.
+
+Bước 14: Tối ưu hiệu năng frontend.
+
+Bước 15: Kiểm tra responsive.
+
+Bước 16: Kiểm tra chức năng.
+
+Bước 17: Kiểm tra phân quyền.
+
+Bước 18: Kiểm tra lỗi.
+
+Bước 19: Báo cáo kết quả.
+
+Không bỏ qua các bước quan trọng.
+
+---
+
+# XIV. NGUYÊN TẮC BẢO TOÀN
+
+- Không xóa dữ liệu hiện tại.
+- Không tự ý xóa bảng.
+- Không tự ý xóa file Storage.
+- Không tắt RLS.
+- Không để lộ secrets.
+- Không tự thay đổi quyền người dùng.
+- Không tự tạo tài khoản quản trị không được phép.
+- Không tự động ghi dữ liệu giả.
+- Không tự động ghi dữ liệu hàng loạt khi chưa xác thực.
+- Không thay đổi các chức năng đã hoạt động nếu không cần.
+- Không phá vỡ dữ liệu liên quan.
+- Không triển khai thay đổi Database phá hủy dữ liệu.
+- Mọi thao tác xóa phải có xác nhận.
+- Mọi thay đổi quan trọng phải có kiểm tra.
+
+---
+
+# XV. KẾT QUẢ CUỐI CÙNG
+
+Tôi muốn nhận được ứng dụng web hoàn chỉnh, có thể phát triển và triển khai thực tế, gồm:
+
+1. Màn hình đăng nhập Google.
+2. Phân quyền.
+3. Dashboard tổng quan.
+4. Lịch làm việc.
+5. Chấm công.
+6. Nhân sự.
+7. Ý kiến khách hàng.
+8. Kho dữ liệu.
+9. Quét mã vạch.
+10. Kiểm soát hạn sử dụng.
+11. Đổi trả hàng hóa.
+12. Chương trình khuyến mãi.
+13. Quản lý Supabase.
+14. Giám sát tài nguyên Supabase.
+15. Quản lý Storage.
+16. Responsive desktop.
+17. Responsive tablet.
+18. Responsive mobile.
+19. Tối ưu Database.
+20. Tối ưu Bandwidth.
+21. Tối ưu Realtime.
+22. Tối ưu Storage.
+23. Tối ưu hiệu năng.
+24. Bảo mật RLS.
+25. Hướng dẫn triển khai.
+
+Hãy trực tiếp xây dựng và hoàn thiện ứng dụng trong môi trường hiện tại.
+
+Không chỉ đưa ra kế hoạch hoặc hướng dẫn. Hãy thực hiện các phần có thể thực hiện được.
+
+Nếu có phần cần tôi cấu hình thủ công trong Google Cloud Console hoặc Supabase Dashboard, hãy liệt kê chính xác các bước, vị trí và nội dung cần cấu hình.
+
+Sau khi hoàn thành, báo cáo:
+
+- Các chức năng đã hoàn thành.
+- Các chức năng chưa hoàn thành.
+- Các file đã tạo hoặc chỉnh sửa.
+- Database đã tạo hoặc chưa tạo.
+- RLS đã cấu hình hay chưa.
+- Google OAuth đã tích hợp hay chưa.
+- Supabase đã kết nối thực tế hay chưa.
+- Những phần đã kiểm tra.
+- Những phần chưa kiểm tra.
+- Các vấn đề cần tôi cấu hình thủ công.
+- Các điểm có thể tiếp tục tối ưu.
+
+Ưu tiên tính ổn định, bảo mật, tiết kiệm tài nguyên, trải nghiệm người dùng, tính toàn vẹn dữ liệu và khả năng sử dụng thực tế.

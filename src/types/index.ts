@@ -1,4 +1,22 @@
-export type AppTab = 'scanner' | 'schedule' | 'activity' | 'access' | 'account';
+export type AppTab =
+  | 'overview'
+  | 'schedule'
+  | 'attendance'
+  | 'staff'
+  | 'feedback'
+  | 'warehouse'
+  | 'scanner'
+  | 'expiry'
+  | 'returns'
+  | 'promotions'
+  | 'supabase'
+  | 'monitoring'
+  | 'storage'
+  | 'settings'
+  | 'access'
+  | 'activity';
+
+export type NavGroupId = 'ops' | 'goods' | 'system';
 
 export type UserRole = 'store_manager' | 'supervisor' | 'shift_lead' | 'staff';
 
@@ -21,6 +39,25 @@ export interface SupabaseConfig {
   anonKey: string;
 }
 
+export interface ModuleAccessFlags {
+  overview: boolean;
+  schedule: boolean;
+  attendance: boolean;
+  staff: boolean;
+  feedback: boolean;
+  warehouse: boolean;
+  scanner: boolean;
+  expiry: boolean;
+  returns: boolean;
+  promotions: boolean;
+  supabase: boolean;
+  monitoring: boolean;
+  storage: boolean;
+  settings: boolean;
+  access: boolean;
+  activity: boolean;
+}
+
 export interface ModulePermissions {
   scopeAll: boolean;
   barcodeView: boolean;
@@ -35,6 +72,7 @@ export interface ModulePermissions {
   allowExport: boolean;
   activityView: boolean;
   allowSupabase: boolean;
+  modulePerms?: Partial<ModuleAccessFlags>;
 }
 
 export interface AuthorizedEmail extends ModulePermissions {
@@ -54,6 +92,7 @@ export interface EffectivePermissions extends ModulePermissions {
   authorized: boolean;
   isSuperAdmin: boolean;
   role: UserRole;
+  modules: ModuleAccessFlags;
 }
 
 export interface AuthenticatedUser {
@@ -62,6 +101,38 @@ export interface AuthenticatedUser {
   displayName: string;
   photoURL?: string;
   provider: 'supabase' | 'firebase';
+}
+
+export interface UserProfileRecord {
+  id: string;
+  email: string;
+  displayName: string;
+  avatarUrl: string;
+  avatarPath: string;
+  birthDate: string;
+  gender: string;
+  phone: string;
+  updatedAt: string | null;
+}
+
+export interface LeaveRulesConfig {
+  maxDoPerWeek: number;
+  weekdayMaxDo: number;
+  weekendMaxDo: number;
+  requireAdminOverride: boolean;
+}
+
+export interface ShiftDefinition {
+  id: string;
+  code: string;
+  name: string;
+  startTime: string;
+  endTime: string;
+  isDayOff: boolean;
+  sortOrder: number;
+  active: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
 }
 
 export interface BarcodeScan {
@@ -88,6 +159,10 @@ export interface WorkSchedule {
   title: string;
   workDate: string; // YYYY-MM-DD
   shiftType: ShiftType;
+  shiftId?: string | null;
+  isDayOff?: boolean;
+  overrideApproved?: boolean;
+  overrideReason?: string;
   startTime: string; // HH:MM
   endTime: string; // HH:MM
   location: string;
@@ -102,7 +177,150 @@ export interface WorkSchedule {
   updatedAt: string | null;
 }
 
-export type ActivityModule = 'barcode' | 'schedule' | 'access' | 'system' | 'export';
+export interface AttendanceNoteEntry {
+  id: string;
+  type: 'overtime' | 'early_leave' | 'incident' | 'note';
+  content: string;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface AttendanceRecord {
+  id: string;
+  scheduleId: string | null;
+  ownerId: string;
+  ownerEmail: string;
+  employeeName: string;
+  shiftName: string;
+  workDate: string;
+  checkInAt: string;
+  checkOutAt: string | null;
+  isUnscheduled: boolean;
+  status: 'checked_in' | 'checked_out' | 'early_leave' | 'overtime';
+  notesHistory: AttendanceNoteEntry[];
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface CustomerFeedback {
+  id: string;
+  ownerId: string;
+  ownerEmail: string;
+  employeeName: string;
+  feedbackDate: string;
+  category: 'product' | 'service';
+  productName: string;
+  content: string;
+  imagePath: string;
+  imageThumbPath: string;
+  createdAt: string;
+}
+
+export interface ProductCatalogItem {
+  id: string;
+  productCode: string;
+  barcode: string;
+  name: string;
+  unit: string;
+  price: number;
+  supplierName: string;
+  updatedBy: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface SupplierPolicyItem {
+  id: string;
+  category: string;
+  supplierName: string;
+  supplierSystemName: string;
+  productName: string;
+  returnPolicy: string;
+  warnMonthsBefore: number;
+  updatedBy: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface ExpiryTrackingItem {
+  id: string;
+  productCode: string;
+  barcode: string;
+  productName: string;
+  unit: string;
+  supplierSystemName: string;
+  returnPolicy: string;
+  warnMonthsBefore: number;
+  mfgDate: string;
+  expDate: string;
+  ptCode: string;
+  note: string;
+  updatedBy: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface ReturnRecordItem {
+  id: string;
+  ptCode: string;
+  supplierSystemName: string;
+  productSummary: string;
+  returnMethod: string;
+  progress: 'processing' | 'completed';
+  reportedDate: string;
+  completedDate: string;
+  lastUpdateNote: string;
+  updatedBy: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface PromotionItem {
+  id: string;
+  productCode: string;
+  barcode: string;
+  productName: string;
+  hasBBadge: boolean;
+  unit: string;
+  expDate: string;
+  quantity: number;
+  discountRate: number;
+  regularPrice: number;
+  promoPrice: number;
+  ptCode: string;
+  status: 'active' | 'scheduled' | 'ended';
+  updatedBy: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface StorageFileEntry {
+  id: string;
+  bucket: string;
+  name: string;
+  path: string;
+  sizeBytes: number;
+  mimeType: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  ownerFolder: string;
+  category: 'image' | 'pdf' | 'excel' | 'other';
+}
+
+export type ActivityModule =
+  | 'barcode'
+  | 'schedule'
+  | 'attendance'
+  | 'staff'
+  | 'feedback'
+  | 'warehouse'
+  | 'expiry'
+  | 'returns'
+  | 'promotions'
+  | 'storage'
+  | 'access'
+  | 'system'
+  | 'export';
 
 export type ActivityAction =
   | 'create'
@@ -146,4 +364,10 @@ export interface ToastMessage {
   id: string;
   type: 'success' | 'error' | 'info';
   message: string;
+}
+
+export interface UiPreferences {
+  defaultPageSize: 20 | 50 | 100;
+  compactSidebar: boolean;
+  autoResetPromoIdle: boolean;
 }

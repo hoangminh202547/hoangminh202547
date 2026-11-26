@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth';
 import {
@@ -18,26 +26,38 @@ import {
   type Timestamp,
 } from 'firebase/firestore';
 import {
+  Activity,
+  Boxes,
+  CalendarClock,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
   Database,
+  HardDrive,
   History,
+  LayoutDashboard,
   LogOut,
+  Menu,
+  MessageSquareText,
+  PanelLeftClose,
+  PanelLeftOpen,
+  RotateCcw,
   ScanBarcode,
+  Settings,
   ShieldCheck,
-  UserCircle,
+  Tag,
+  Users,
   X,
 } from 'lucide-react';
-import { AccessControlTab, type SaveMemberParams } from './components/AccessControlTab';
+import type { SaveMemberParams } from './components/AccessControlTab';
 import { AccessPendingScreen } from './components/AccessPendingScreen';
-import { ActivityLogTab } from './components/ActivityLogTab';
-import { BarcodeScannerTab } from './components/BarcodeScannerTab';
 import { ConflictDialog } from './components/ConflictDialog';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SignInScreen } from './components/SignInScreen';
-import { SupabasePanel } from './components/SupabasePanel';
 import { SyncStatusBadge } from './components/SyncStatusBadge';
-import { WorkScheduleTab } from './components/WorkScheduleTab';
 import {
   OperationType,
   auth,
@@ -48,12 +68,16 @@ import {
 import {
   EMPTY_MODULE_PERMISSIONS,
   FULL_ADMIN_PERMISSIONS,
+  FULL_MODULE_FLAGS,
+  NAV_GROUPS,
+  NAV_ITEMS,
   ROLE_DEFAULT_PERMS,
   ROLE_LABELS,
   SUPER_ADMIN_EMAIL,
   emailToKey,
   normalizeEmail,
   normalizeRole,
+  resolveModuleAccessFlags,
 } from './lib/permissions';
 import {
   appendActivityLog,
@@ -77,6 +101,11 @@ import {
   upsertUserProfile,
   type RealtimeSubscriptionHandle,
 } from './lib/supabase';
+import {
+  DEFAULT_LEAVE_RULES,
+  fetchLeaveRules,
+  fetchShiftDefinitions,
+} from './lib/supabaseOps';
 import type {
   ActivityAction,
   ActivityLog,
@@ -88,14 +117,136 @@ import type {
   DataBackendMode,
   EditConflict,
   EffectivePermissions,
+  LeaveRulesConfig,
+  NavGroupId,
   ScheduleStatus,
+  ShiftDefinition,
   ShiftType,
   SupabaseConfig,
   SyncState,
   ToastMessage,
-  UserRole,
+  UiPreferences,
   WorkSchedule,
 } from './types';
+
+// Lazy-loaded modules — unopened modules fetch 0 bytes and 0 Supabase queries
+const OverviewTab = lazy(() =>
+  import('./components/ops/OverviewTab').then((m) => ({ default: m.OverviewTab }))
+);
+const WorkScheduleTab = lazy(() =>
+  import('./components/WorkScheduleTab').then((m) => ({ default: m.WorkScheduleTab }))
+);
+const AttendanceTab = lazy(() =>
+  import('./components/ops/AttendanceTab').then((m) => ({ default: m.AttendanceTab }))
+);
+const StaffProfileTab = lazy(() =>
+  import('./components/ops/StaffProfileTab').then((m) => ({ default: m.StaffProfileTab }))
+);
+const CustomerFeedbackTab = lazy(() =>
+  import('./components/ops/CustomerFeedbackTab').then((m) => ({
+    default: m.CustomerFeedbackTab,
+  }))
+);
+const DataWarehouseTab = lazy(() =>
+  import('./components/goods/DataWarehouseTab').then((m) => ({
+    default: m.DataWarehouseTab,
+  }))
+);
+const BarcodeScannerTab = lazy(() =>
+  import('./components/BarcodeScannerTab').then((m) => ({
+    default: m.BarcodeScannerTab,
+  }))
+);
+const ExpiryControlTab = lazy(() =>
+  import('./components/goods/ExpiryControlTab').then((m) => ({
+    default: m.ExpiryControlTab,
+  }))
+);
+const GoodsReturnTab = lazy(() =>
+  import('./components/goods/GoodsReturnTab').then((m) => ({
+    default: m.GoodsReturnTab,
+  }))
+);
+const PromotionsTab = lazy(() =>
+  import('./components/goods/PromotionsTab').then((m) => ({
+    default: m.PromotionsTab,
+  }))
+);
+const SupabasePanel = lazy(() =>
+  import('./components/SupabasePanel').then((m) => ({ default: m.SupabasePanel }))
+);
+const ResourceMonitorTab = lazy(() =>
+  import('./components/system/ResourceMonitorTab').then((m) => ({
+    default: m.ResourceMonitorTab,
+  }))
+);
+const StorageManagerTab = lazy(() =>
+  import('./components/system/StorageManagerTab').then((m) => ({
+    default: m.StorageManagerTab,
+  }))
+);
+const SettingsTab = lazy(() =>
+  import('./components/system/SettingsTab').then((m) => ({ default: m.SettingsTab }))
+);
+const AccessControlTab = lazy(() =>
+  import('./components/AccessControlTab').then((m) => ({
+    default: m.AccessControlTab,
+  }))
+);
+const ActivityLogTab = lazy(() =>
+  import('./components/ActivityLogTab').then((m) => ({ default: m.ActivityLogTab }))
+);
+
+const DEFAULT_SHIFTS_FALLBACK: ShiftDefinition[] = [
+  {
+    id: 'shift-ca1',
+    code: 'CA1',
+    name: 'Ca 1',
+    startTime: '06:00',
+    endTime: '14:00',
+    isDayOff: false,
+    sortOrder: 1,
+    active: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    id: 'shift-ca2',
+    code: 'CA2',
+    name: 'Ca 2',
+    startTime: '14:00',
+    endTime: '22:00',
+    isDayOff: false,
+    sortOrder: 2,
+    active: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    id: 'shift-hc',
+    code: 'HC',
+    name: 'Hành chính',
+    startTime: '08:00',
+    endTime: '17:00',
+    isDayOff: false,
+    sortOrder: 3,
+    active: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    id: 'shift-do',
+    code: 'DO',
+    name: 'Nghỉ tuần (DO)',
+    startTime: '00:00',
+    endTime: '00:00',
+    isDayOff: true,
+    sortOrder: 4,
+    active: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+];
 
 function toIso(val: unknown): string | null {
   if (!val) return null;
@@ -119,6 +270,7 @@ function buildEffectivePermissions(
         isSuperAdmin: true,
         role: 'store_manager',
         ...FULL_ADMIN_PERMISSIONS,
+        modules: { ...FULL_MODULE_FLAGS },
       },
       deactivated: false,
     };
@@ -131,12 +283,50 @@ function buildEffectivePermissions(
         isSuperAdmin: false,
         role: 'staff',
         ...EMPTY_MODULE_PERMISSIONS,
+        modules: {
+          overview: false,
+          schedule: false,
+          attendance: false,
+          staff: false,
+          feedback: false,
+          warehouse: false,
+          scanner: false,
+          expiry: false,
+          returns: false,
+          promotions: false,
+          supabase: false,
+          monitoring: false,
+          storage: false,
+          settings: false,
+          access: false,
+          activity: false,
+        },
       },
       deactivated: false,
     };
   }
 
   const active = Boolean(access.active);
+  const resolvedModules = resolveModuleAccessFlags(access.role, access.modulePerms, access);
+  const gatedModules = {
+    overview: active && resolvedModules.overview,
+    schedule: active && resolvedModules.schedule,
+    attendance: active && resolvedModules.attendance,
+    staff: active && resolvedModules.staff,
+    feedback: active && resolvedModules.feedback,
+    warehouse: active && resolvedModules.warehouse,
+    scanner: active && resolvedModules.scanner,
+    expiry: active && resolvedModules.expiry,
+    returns: active && resolvedModules.returns,
+    promotions: active && resolvedModules.promotions,
+    supabase: active && resolvedModules.supabase,
+    monitoring: active && resolvedModules.monitoring,
+    storage: active && resolvedModules.storage,
+    settings: active && resolvedModules.settings,
+    access: active && resolvedModules.access,
+    activity: active && resolvedModules.activity,
+  };
+
   return {
     permissions: {
       authorized: active,
@@ -155,9 +345,111 @@ function buildEffectivePermissions(
       allowExport: active && access.allowExport,
       activityView: active && access.activityView,
       allowSupabase: active && access.allowSupabase,
+      modulePerms: gatedModules,
+      modules: gatedModules,
     },
     deactivated: !active,
   };
+}
+
+const TAB_ICONS: Record<AppTab, typeof LayoutDashboard> = {
+  overview: LayoutDashboard,
+  schedule: CalendarDays,
+  attendance: Clock,
+  staff: Users,
+  feedback: MessageSquareText,
+  warehouse: Boxes,
+  scanner: ScanBarcode,
+  expiry: CalendarClock,
+  returns: RotateCcw,
+  promotions: Tag,
+  supabase: Database,
+  monitoring: Activity,
+  storage: HardDrive,
+  settings: Settings,
+  access: ShieldCheck,
+  activity: History,
+};
+
+const TAB_META: Record<AppTab, { title: string; subtitle: string }> = {
+  overview: {
+    title: 'Tổng quan vận hành',
+    subtitle: 'Ca làm hôm nay, chấm công, cảnh báo hạn sử dụng và lối tắt nghiệp vụ',
+  },
+  schedule: {
+    title: 'Lịch làm việc',
+    subtitle: 'Đăng ký ca làm, định mức ngày nghỉ DO, bảng phân công tuần và xuất ảnh PNG',
+  },
+  attendance: {
+    title: 'Chấm công',
+    subtitle: 'Vào ca / Kết ca theo thời gian máy chủ, lịch sử tăng ca – về sớm – phát sinh',
+  },
+  staff: {
+    title: 'Nhân sự',
+    subtitle: 'Cập nhật hồ sơ cá nhân, ảnh đại diện nén WebP và danh bạ cửa hàng',
+  },
+  feedback: {
+    title: 'Ý kiến khách hàng',
+    subtitle: 'Ghi nhận phản hồi sản phẩm, chất lượng dịch vụ và ảnh đính kèm theo ngày',
+  },
+  warehouse: {
+    title: 'Kho dữ liệu',
+    subtitle: 'Danh mục hàng hóa gốc (SP, barcode, giá) và chính sách nhà cung cấp',
+  },
+  scanner: {
+    title: 'Quét mã vạch',
+    subtitle: 'Quét liên tục bằng camera hoặc súng USB, lưu trữ trực tuyến và xuất Excel',
+  },
+  expiry: {
+    title: 'Kiểm soát hạn sử dụng',
+    subtitle: 'Theo dõi lô hàng theo HSD, tự động tính ngày cảnh báo trả NCC và xuất báo cáo',
+  },
+  returns: {
+    title: 'Đổi trả hàng hóa',
+    subtitle: 'Quản lý phiếu trả (PT), hình thức thu hồi, tiến độ xử lý và nhắc việc quá hạn',
+  },
+  promotions: {
+    title: 'Chương trình khuyến mãi',
+    subtitle: 'Theo dõi hàng cận date giảm giá, tính tự động giá KM và xuất tem/báo cáo',
+  },
+  supabase: {
+    title: 'Quản lý Supabase',
+    subtitle: 'Kết nối Supabase Realtime + RLS, script SQL nâng cấp và đồng bộ dữ liệu cũ',
+  },
+  monitoring: {
+    title: 'Giám sát tài nguyên',
+    subtitle: 'Theo dõi chỉ số thực tế từ Supabase Management API và thống kê truy vấn client',
+  },
+  storage: {
+    title: 'Quản lý Storage',
+    subtitle: 'Kiểm tra dung lượng ảnh/tài liệu, phát hiện file mồ côi và dọn dẹp an toàn',
+  },
+  settings: {
+    title: 'Cấu hình',
+    subtitle: 'Tùy chọn hiển thị bảng, tối ưu dữ liệu và quy định ngày nghỉ tuần (DO)',
+  },
+  access: {
+    title: 'Phân quyền',
+    subtitle: 'Quản lý 4 vai trò và bật/tắt chi tiết từng phân hệ trong toàn cửa hàng',
+  },
+  activity: {
+    title: 'Nhật ký hoạt động',
+    subtitle: 'Theo dõi lịch sử thêm, sửa, xóa, phê duyệt và xuất dữ liệu toàn hệ thống',
+  },
+};
+
+function ModuleSuspenseFallback() {
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+      <div className="h-6 w-48 bg-slate-100 rounded" />
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="h-24 bg-slate-100 rounded-lg" />
+        <div className="h-24 bg-slate-100 rounded-lg" />
+        <div className="h-24 bg-slate-100 rounded-lg" />
+      </div>
+      <div className="h-44 bg-slate-100 rounded-lg" />
+    </div>
+  );
 }
 
 function MainApp() {
@@ -173,11 +465,12 @@ function MainApp() {
     [supabaseReady, supabaseConfig]
   );
 
-  // Auth states (Supabase primary when configured & signed in; Firebase fallback/migration)
+  // Auth states
   const [supabaseAuthReady, setSupabaseAuthReady] = useState(false);
   const [supabaseSession, setSupabaseSession] = useState<Session | null>(null);
   const [firebaseAuthReady, setFirebaseAuthReady] = useState(false);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [customDisplayName, setCustomDisplayName] = useState<string | null>(null);
 
   const backendMode: DataBackendMode = useMemo(() => {
     if (supabaseClient && supabaseSession?.user) return 'supabase';
@@ -192,6 +485,7 @@ function MainApp() {
         uid: u.id,
         email: u.email || '',
         displayName:
+          customDisplayName ||
           String(meta.full_name || meta.name || '').trim() ||
           (u.email ? u.email.split('@')[0] : 'Người dùng'),
         photoURL: typeof meta.avatar_url === 'string' ? meta.avatar_url : undefined,
@@ -203,6 +497,7 @@ function MainApp() {
         uid: firebaseUser.uid,
         email: firebaseUser.email || '',
         displayName:
+          customDisplayName ||
           firebaseUser.displayName ||
           (firebaseUser.email ? firebaseUser.email.split('@')[0] : 'Người dùng'),
         photoURL: firebaseUser.photoURL || undefined,
@@ -210,13 +505,28 @@ function MainApp() {
       };
     }
     return null;
-  }, [supabaseSession, firebaseUser]);
+  }, [supabaseSession, firebaseUser, customDisplayName]);
 
   const authReady = supabaseClient
     ? supabaseAuthReady && firebaseAuthReady
     : firebaseAuthReady;
 
-  const [activeTab, setActiveTab] = useState<AppTab>('scanner');
+  const [activeTab, setActiveTab] = useState<AppTab>('overview');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<NavGroupId, boolean>>({
+    ops: false,
+    goods: false,
+    system: false,
+  });
+
+  // UI & Reference Settings
+  const [uiPrefs, setUiPrefs] = useState<UiPreferences>({
+    defaultPageSize: 20,
+    compactSidebar: false,
+    autoResetPromoIdle: true,
+  });
+  const [leaveRules, setLeaveRules] = useState<LeaveRulesConfig>(DEFAULT_LEAVE_RULES);
+  const [shifts, setShifts] = useState<ShiftDefinition[]>(DEFAULT_SHIFTS_FALLBACK);
 
   // Access control & permissions
   const [accessChecked, setAccessChecked] = useState(false);
@@ -227,9 +537,27 @@ function MainApp() {
     isSuperAdmin: false,
     role: 'staff',
     ...EMPTY_MODULE_PERMISSIONS,
+    modules: {
+      overview: false,
+      schedule: false,
+      attendance: false,
+      staff: false,
+      feedback: false,
+      warehouse: false,
+      scanner: false,
+      expiry: false,
+      returns: false,
+      promotions: false,
+      supabase: false,
+      monitoring: false,
+      storage: false,
+      settings: false,
+      access: false,
+      activity: false,
+    },
   });
 
-  // Core operational datasets
+  // Core shared datasets
   const [authorizedMembers, setAuthorizedMembers] = useState<AuthorizedEmail[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
 
@@ -248,6 +576,9 @@ function MainApp() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [activeConflict, setActiveConflict] = useState<EditConflict | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [orphanedCallback, setOrphanedCallback] = useState<{
+    error?: string;
+  } | null>(null);
 
   const realtimeRef = useRef<RealtimeSubscriptionHandle | null>(null);
   const prevChannelDisconnectedRef = useRef(false);
@@ -291,9 +622,12 @@ function MainApp() {
   // ============================================================================
   // Auth Initialization (Supabase Auth + Firebase Auth)
   // ============================================================================
-  // Unconditional OAuth popup callback relay even when Supabase config is stored in-app (not .env)
   useEffect(() => {
-    void handleSupabaseOAuthRedirectIfPresent(null);
+    void handleSupabaseOAuthRedirectIfPresent(null).then((res) => {
+      if (res.detected && res.missingOpener) {
+        setOrphanedCallback({ error: res.error });
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -306,7 +640,10 @@ function MainApp() {
 
     const init = async () => {
       try {
-        await handleSupabaseOAuthRedirectIfPresent(supabaseClient);
+        const res = await handleSupabaseOAuthRedirectIfPresent(supabaseClient);
+        if (mounted && res.detected && !res.relayed && !res.missingOpener) {
+          setOrphanedCallback(null);
+        }
         const { data } = await supabaseClient.auth.getSession();
         if (mounted) {
           setSupabaseSession(data.session ?? null);
@@ -318,14 +655,12 @@ function MainApp() {
     };
     void init();
 
-    const { data: sub } = supabaseClient.auth.onAuthStateChange(
-      (_event, session) => {
-        if (mounted) {
-          setSupabaseSession(session ?? null);
-          setSupabaseAuthReady(true);
-        }
+    const { data: sub } = supabaseClient.auth.onAuthStateChange((_event, session) => {
+      if (mounted) {
+        setSupabaseSession(session ?? null);
+        setSupabaseAuthReady(true);
       }
-    );
+    });
 
     return () => {
       mounted = false;
@@ -364,11 +699,7 @@ function MainApp() {
             await setDoc(userRef, payload);
           }
         } catch (error) {
-          reportFirestoreError(
-            error,
-            OperationType.WRITE,
-            `users/${fbUser.uid}`
-          );
+          reportFirestoreError(error, OperationType.WRITE, `users/${fbUser.uid}`);
         }
       }
     });
@@ -376,7 +707,6 @@ function MainApp() {
     return () => unsub();
   }, [reportFirestoreError]);
 
-  // Load saved in-app Supabase config from Firebase user profile if env is empty
   useEffect(() => {
     if (!firebaseUser) return;
     const path = `users/${firebaseUser.uid}`;
@@ -387,13 +717,10 @@ function MainApp() {
           const data = snap.data();
           const envCfg = getEnvSupabaseConfig();
           const nextUrl =
-            envCfg.url ||
-            (typeof data.supabaseUrl === 'string' ? data.supabaseUrl : '');
+            envCfg.url || (typeof data.supabaseUrl === 'string' ? data.supabaseUrl : '');
           const nextAnonKey =
             envCfg.anonKey ||
-            (typeof data.supabaseAnonKey === 'string'
-              ? data.supabaseAnonKey
-              : '');
+            (typeof data.supabaseAnonKey === 'string' ? data.supabaseAnonKey : '');
           setSupabaseConfig((prev) =>
             prev.url === nextUrl && prev.anonKey === nextAnonKey
               ? prev
@@ -406,9 +733,9 @@ function MainApp() {
     return () => unsub();
   }, [firebaseUser, reportFirestoreError]);
 
-  // Reset state on sign out
   useEffect(() => {
     if (!currentUser) {
+      setCustomDisplayName(null);
       setAccessChecked(false);
       setAccessDeactivated(false);
       setPermissions({
@@ -416,6 +743,24 @@ function MainApp() {
         isSuperAdmin: false,
         role: 'staff',
         ...EMPTY_MODULE_PERMISSIONS,
+        modules: {
+          overview: false,
+          schedule: false,
+          attendance: false,
+          staff: false,
+          feedback: false,
+          warehouse: false,
+          scanner: false,
+          expiry: false,
+          returns: false,
+          promotions: false,
+          supabase: false,
+          monitoring: false,
+          storage: false,
+          settings: false,
+          access: false,
+          activity: false,
+        },
       });
       setAuthorizedMembers([]);
       setScans([]);
@@ -430,12 +775,16 @@ function MainApp() {
   // ============================================================================
   const refreshSupabaseAccess = useCallback(async () => {
     if (!supabaseClient || !currentUser || backendMode !== 'supabase') return;
-    await upsertUserProfile(supabaseClient, {
-      uid: currentUser.uid,
-      email: currentUser.email,
-      displayName: currentUser.displayName,
-      photoURL: currentUser.photoURL,
-    });
+    try {
+      await upsertUserProfile(supabaseClient, {
+        uid: currentUser.uid,
+        email: currentUser.email,
+        displayName: currentUser.displayName,
+        photoURL: currentUser.photoURL,
+      });
+    } catch {
+      // Non-fatal
+    }
     const res = await fetchMyAccessFromSupabase(supabaseClient, currentUser.email);
     const resolved = buildEffectivePermissions(currentUser.email, res.access);
     setPermissions(resolved.permissions);
@@ -457,7 +806,6 @@ function MainApp() {
       return;
     }
 
-    // Firebase mode RBAC listener
     const cleanEmail = normalizeEmail(currentUser.email);
     if (cleanEmail === SUPER_ADMIN_EMAIL) {
       const resolved = buildEffectivePermissions(cleanEmail, null);
@@ -494,15 +842,23 @@ function MainApp() {
           barcodeView: Boolean(data.barcodeView ?? data.allowBarcode ?? defaults.barcodeView),
           barcodeCreate: Boolean(data.barcodeCreate ?? data.allowBarcode ?? defaults.barcodeCreate),
           barcodeEdit: Boolean(data.barcodeEdit ?? data.allowBarcode ?? defaults.barcodeEdit),
-          barcodeDelete: Boolean(data.barcodeDelete ?? (role !== 'staff' ? defaults.barcodeDelete : false)),
+          barcodeDelete: Boolean(
+            data.barcodeDelete ?? (role !== 'staff' ? defaults.barcodeDelete : false)
+          ),
           scheduleView: Boolean(data.scheduleView ?? data.allowSchedule ?? defaults.scheduleView),
-          scheduleCreate: Boolean(data.scheduleCreate ?? data.allowSchedule ?? defaults.scheduleCreate),
+          scheduleCreate: Boolean(
+            data.scheduleCreate ?? data.allowSchedule ?? defaults.scheduleCreate
+          ),
           scheduleEdit: Boolean(data.scheduleEdit ?? data.allowSchedule ?? defaults.scheduleEdit),
           scheduleDelete: Boolean(data.scheduleDelete ?? defaults.scheduleDelete),
           scheduleApprove: Boolean(data.scheduleApprove ?? defaults.scheduleApprove),
           allowExport: Boolean(data.allowExport ?? defaults.allowExport),
           activityView: Boolean(data.activityView ?? defaults.activityView),
           allowSupabase: Boolean(data.allowSupabase ?? defaults.allowSupabase),
+          modulePerms:
+            data.modulePerms && typeof data.modulePerms === 'object'
+              ? (data.modulePerms as AuthorizedEmail['modulePerms'])
+              : defaults.modulePerms,
           note: String(data.note || ''),
           grantedBy: String(data.grantedBy || ''),
           version: Number(data.version || 1),
@@ -534,10 +890,7 @@ function MainApp() {
     try {
       if (backendMode === 'supabase' && supabaseClient) {
         await refreshSupabaseAccess();
-        const res = await fetchMyAccessFromSupabase(
-          supabaseClient,
-          currentUser.email
-        );
+        const res = await fetchMyAccessFromSupabase(supabaseClient, currentUser.email);
         if (!res.access) {
           notify('info', 'Tài khoản vẫn chưa được Quản lý siêu thị cấp quyền.');
         } else if (!res.access.active) {
@@ -560,31 +913,38 @@ function MainApp() {
   // Keep activeTab within permitted tabs
   useEffect(() => {
     if (!permissions.authorized) return;
-    const isStoreManager = permissions.role === 'store_manager';
-    if (activeTab === 'scanner' && !permissions.barcodeView) {
-      if (permissions.scheduleView) setActiveTab('schedule');
-      else if (permissions.activityView) setActiveTab('activity');
-      else if (isStoreManager) setActiveTab('access');
-      else setActiveTab('account');
-    } else if (activeTab === 'schedule' && !permissions.scheduleView) {
-      if (permissions.barcodeView) setActiveTab('scanner');
-      else if (permissions.activityView) setActiveTab('activity');
-      else if (isStoreManager) setActiveTab('access');
-      else setActiveTab('account');
-    } else if (activeTab === 'activity' && !permissions.activityView) {
-      if (permissions.barcodeView) setActiveTab('scanner');
-      else if (permissions.scheduleView) setActiveTab('schedule');
-      else setActiveTab('account');
-    } else if (activeTab === 'access' && !isStoreManager) {
-      if (permissions.barcodeView) setActiveTab('scanner');
-      else if (permissions.scheduleView) setActiveTab('schedule');
-      else setActiveTab('account');
+    const allowed = permissions.modules;
+    const isAllowed = (tab: AppTab): boolean => {
+      if (tab === 'supabase' && permissions.allowSupabase) return true;
+      return Boolean(allowed[tab]);
+    };
+    if (!isAllowed(activeTab)) {
+      const firstPermitted = NAV_ITEMS.find((item) => isAllowed(item.id));
+      if (firstPermitted) {
+        setActiveTab(firstPermitted.id);
+      }
     }
   }, [permissions, activeTab]);
 
   // ============================================================================
-  // Supabase Primary Hydration & Realtime Sync Manager
+  // Supabase Reference & Primary Hydration + Realtime Sync
   // ============================================================================
+  const refreshShiftsAndRules = useCallback(async () => {
+    if (!supabaseClient || backendMode !== 'supabase') return;
+    try {
+      const [rules, shiftList] = await Promise.all([
+        fetchLeaveRules(supabaseClient),
+        fetchShiftDefinitions(supabaseClient),
+      ]);
+      setLeaveRules(rules);
+      if (shiftList.length > 0) {
+        setShifts(shiftList);
+      }
+    } catch {
+      // Fall back to default shifts if migration 002 hasn't been executed yet
+    }
+  }, [supabaseClient, backendMode]);
+
   const hydrateSupabaseData = useCallback(async () => {
     if (!supabaseClient || !currentUser || !permissions.authorized) return;
     setSyncState('syncing');
@@ -593,10 +953,13 @@ function MainApp() {
     if (permissions.role === 'store_manager') setMembersLoading(true);
     if (permissions.activityView) setActivityLoading(true);
 
-    const res = await fetchAllSyncedData(supabaseClient, {
-      isStoreManager: permissions.role === 'store_manager',
-      allowActivity: permissions.activityView,
-    });
+    const [res] = await Promise.all([
+      fetchAllSyncedData(supabaseClient, {
+        isStoreManager: permissions.role === 'store_manager',
+        allowActivity: permissions.activityView,
+      }),
+      refreshShiftsAndRules(),
+    ]);
 
     if (res.error) {
       setSyncState('error');
@@ -622,7 +985,15 @@ function MainApp() {
     setActivityLoading(false);
     setLastSyncedAt(new Date().toISOString());
     setSyncState('synced');
-  }, [supabaseClient, currentUser, permissions.authorized, permissions.role, permissions.activityView, notify]);
+  }, [
+    supabaseClient,
+    currentUser,
+    permissions.authorized,
+    permissions.role,
+    permissions.activityView,
+    refreshShiftsAndRules,
+    notify,
+  ]);
 
   useEffect(() => {
     if (
@@ -643,7 +1014,6 @@ function MainApp() {
 
     void hydrateSupabaseData();
 
-    // Ensure single deduplicated Realtime subscription
     if (realtimeRef.current) {
       void realtimeRef.current.unsubscribe();
       realtimeRef.current = null;
@@ -708,7 +1078,6 @@ function MainApp() {
             return [...next].sort((a, b) => a.email.localeCompare(b.email));
           });
         }
-        // Real-time permission enforcement if current user's access row changed
         if (
           newRow &&
           normalizeEmail(newRow.email) === normalizeEmail(currentUser.email)
@@ -798,7 +1167,7 @@ function MainApp() {
   ]);
 
   // ============================================================================
-  // Firebase Live Listeners (Fallback when Supabase Auth is not yet configured)
+  // Firebase Live Listeners (Fallback when Supabase Auth is not yet active)
   // ============================================================================
   useEffect(() => {
     if (
@@ -828,17 +1197,25 @@ function MainApp() {
             active: Boolean(data.active),
             scopeAll: Boolean(data.scopeAll ?? defaults.scopeAll),
             barcodeView: Boolean(data.barcodeView ?? data.allowBarcode ?? defaults.barcodeView),
-            barcodeCreate: Boolean(data.barcodeCreate ?? data.allowBarcode ?? defaults.barcodeCreate),
+            barcodeCreate: Boolean(
+              data.barcodeCreate ?? data.allowBarcode ?? defaults.barcodeCreate
+            ),
             barcodeEdit: Boolean(data.barcodeEdit ?? data.allowBarcode ?? defaults.barcodeEdit),
             barcodeDelete: Boolean(data.barcodeDelete ?? defaults.barcodeDelete),
             scheduleView: Boolean(data.scheduleView ?? data.allowSchedule ?? defaults.scheduleView),
-            scheduleCreate: Boolean(data.scheduleCreate ?? data.allowSchedule ?? defaults.scheduleCreate),
+            scheduleCreate: Boolean(
+              data.scheduleCreate ?? data.allowSchedule ?? defaults.scheduleCreate
+            ),
             scheduleEdit: Boolean(data.scheduleEdit ?? data.allowSchedule ?? defaults.scheduleEdit),
             scheduleDelete: Boolean(data.scheduleDelete ?? defaults.scheduleDelete),
             scheduleApprove: Boolean(data.scheduleApprove ?? defaults.scheduleApprove),
             allowExport: Boolean(data.allowExport ?? defaults.allowExport),
             activityView: Boolean(data.activityView ?? defaults.activityView),
             allowSupabase: Boolean(data.allowSupabase ?? defaults.allowSupabase),
+            modulePerms:
+              data.modulePerms && typeof data.modulePerms === 'object'
+                ? (data.modulePerms as AuthorizedEmail['modulePerms'])
+                : defaults.modulePerms,
             note: String(data.note || ''),
             grantedBy: String(data.grantedBy || ''),
             version: Number(data.version || 1),
@@ -1111,7 +1488,6 @@ function MainApp() {
         return;
       }
 
-      // Firebase fallback (conforms to deployed firestore.rules schema)
       const docId = emailToKey(cleanEmail);
       const ref = doc(db, 'authorized_emails', docId);
       const grantedBy = normalizeEmail(currentUser.email);
@@ -1164,7 +1540,15 @@ function MainApp() {
         );
       }
     },
-    [currentUser, backendMode, supabaseClient, hydrateSupabaseData, recordActivity, notify, reportFirestoreError]
+    [
+      currentUser,
+      backendMode,
+      supabaseClient,
+      hydrateSupabaseData,
+      recordActivity,
+      notify,
+      reportFirestoreError,
+    ]
   );
 
   const handleToggleMemberActive = useCallback(
@@ -1187,6 +1571,7 @@ function MainApp() {
         allowExport: member.allowExport,
         activityView: member.activityView,
         allowSupabase: member.allowSupabase,
+        modulePerms: member.modulePerms,
         active: !member.active,
         note: member.note,
         expectedVersion: member.version,
@@ -1236,7 +1621,7 @@ function MainApp() {
   );
 
   // ============================================================================
-  // Barcode CRUD Handlers (Optimistic Locking + Activity Log)
+  // Barcode CRUD Handlers
   // ============================================================================
   const applyBarcodeUpdate = useCallback(
     async (
@@ -1310,7 +1695,6 @@ function MainApp() {
         return;
       }
 
-      // Firebase fallback
       const ref = doc(db, 'barcode_scans', scan.id);
       try {
         await updateDoc(ref, {
@@ -1551,7 +1935,7 @@ function MainApp() {
   );
 
   // ============================================================================
-  // Work Schedule CRUD Handlers (Optimistic Locking + Approval + Activity Log)
+  // Work Schedule CRUD Handlers (with ShiftDefinition + DO quota fields)
   // ============================================================================
   const handleCreateSchedule = useCallback(
     async (data: {
@@ -1559,6 +1943,10 @@ function MainApp() {
       title: string;
       workDate: string;
       shiftType: ShiftType;
+      shiftId?: string | null;
+      isDayOff?: boolean;
+      overrideApproved?: boolean;
+      overrideReason?: string;
       startTime: string;
       endTime: string;
       location: string;
@@ -1581,6 +1969,10 @@ function MainApp() {
           title: data.title.slice(0, 150),
           workDate: data.workDate,
           shiftType: data.shiftType,
+          shiftId: data.shiftId,
+          isDayOff: data.isDayOff,
+          overrideApproved: data.overrideApproved,
+          overrideReason: data.overrideReason,
           startTime: data.startTime,
           endTime: data.endTime,
           location: data.location.slice(0, 150),
@@ -1607,8 +1999,13 @@ function MainApp() {
           'schedule',
           'create',
           created.id,
-          `Đăng ký ca "${created.title}" (${created.employeeName} · ${created.workDate})`,
-          { workDate: created.workDate, startTime: created.startTime, endTime: created.endTime }
+          `Đăng ký "${created.title}" (${created.employeeName} · ${created.workDate})`,
+          {
+            workDate: created.workDate,
+            startTime: created.startTime,
+            endTime: created.endTime,
+            isDayOff: Boolean(created.isDayOff),
+          }
         );
         notify('success', 'Đã đăng ký lịch làm việc mới.');
         return;
@@ -1652,6 +2049,10 @@ function MainApp() {
         title: string;
         workDate: string;
         shiftType: ShiftType;
+        shiftId: string | null;
+        isDayOff: boolean;
+        overrideApproved: boolean;
+        overrideReason: string;
         startTime: string;
         endTime: string;
         location: string;
@@ -1695,9 +2096,7 @@ function MainApp() {
             localSummary: `${updates.title || schedule.title} · ${updates.status || schedule.status} (${updates.workDate || schedule.workDate})`,
             serverSummary: `${srv.title} · ${srv.status} (${srv.workDate})`,
             onReloadLatest: () => {
-              setSchedules((prev) =>
-                prev.map((w) => (w.id === srv.id ? srv : w))
-              );
+              setSchedules((prev) => prev.map((w) => (w.id === srv.id ? srv : w)));
               notify('info', 'Đã tải bản lịch làm việc mới nhất.');
             },
             onForceOverwrite: async () => {
@@ -1708,9 +2107,7 @@ function MainApp() {
         }
 
         const updated = res.data;
-        setSchedules((prev) =>
-          prev.map((w) => (w.id === updated.id ? updated : w))
-        );
+        setSchedules((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
         setSyncState('synced');
         setLastSyncedAt(new Date().toISOString());
 
@@ -1755,10 +2152,7 @@ function MainApp() {
     async (schedule: WorkSchedule) => {
       if (backendMode === 'supabase' && supabaseClient) {
         setSyncState('syncing');
-        const res = await deleteWorkScheduleInSupabase(
-          supabaseClient,
-          schedule.id
-        );
+        const res = await deleteWorkScheduleInSupabase(supabaseClient, schedule.id);
         if (res.error) {
           setSyncState('error');
           notify('error', res.error);
@@ -1802,11 +2196,30 @@ function MainApp() {
       if (firebaseUser) {
         const userRef = doc(db, 'users', firebaseUser.uid);
         try {
-          await updateDoc(userRef, {
-            supabaseUrl: cfg.url.slice(0, 300),
-            supabaseAnonKey: cfg.anonKey.slice(0, 500),
-            updatedAt: serverTimestamp(),
-          });
+          const snap = await getDoc(userRef);
+          if (snap.exists()) {
+            await updateDoc(userRef, {
+              supabaseUrl: cfg.url.slice(0, 300),
+              supabaseAnonKey: cfg.anonKey.slice(0, 500),
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            const safeEmail = firebaseUser.email || '';
+            const safeName =
+              firebaseUser.displayName || safeEmail.split('@')[0] || 'Người dùng';
+            const payload: Record<string, unknown> = {
+              uid: firebaseUser.uid,
+              email: safeEmail,
+              displayName: safeName.slice(0, 120),
+              supabaseUrl: cfg.url.slice(0, 300),
+              supabaseAnonKey: cfg.anonKey.slice(0, 500),
+              updatedAt: serverTimestamp(),
+            };
+            if (firebaseUser.photoURL) {
+              payload.photoURL = firebaseUser.photoURL.slice(0, 500);
+            }
+            await setDoc(userRef, payload);
+          }
         } catch (error) {
           reportFirestoreError(
             error,
@@ -1838,9 +2251,9 @@ function MainApp() {
     if (backendMode !== 'supabase' || !supabaseClient) {
       notify(
         'info',
-        'Vui lòng đăng nhập Supabase Auth trong mục Liên kết Supabase trước khi chuyển dữ liệu (yêu cầu bởi RLS).'
+        'Vui lòng đăng nhập Supabase Auth trong mục Quản lý Supabase trước khi chuyển dữ liệu.'
       );
-      setActiveTab('account');
+      setActiveTab('supabase');
       return;
     }
     if (!firebaseUser) {
@@ -1929,17 +2342,26 @@ function MainApp() {
             active: Boolean(data.active),
             scopeAll: Boolean(data.scopeAll ?? defaults.scopeAll),
             barcodeView: Boolean(data.barcodeView ?? data.allowBarcode ?? defaults.barcodeView),
-            barcodeCreate: Boolean(data.barcodeCreate ?? data.allowBarcode ?? defaults.barcodeCreate),
+            barcodeCreate: Boolean(
+              data.barcodeCreate ?? data.allowBarcode ?? defaults.barcodeCreate
+            ),
             barcodeEdit: Boolean(data.barcodeEdit ?? data.allowBarcode ?? defaults.barcodeEdit),
             barcodeDelete: Boolean(data.barcodeDelete ?? defaults.barcodeDelete),
-            scheduleView: Boolean(data.scheduleView ?? data.allowSchedule ?? defaults.scheduleView),
-            scheduleCreate: Boolean(data.scheduleCreate ?? data.allowSchedule ?? defaults.scheduleCreate),
-            scheduleEdit: Boolean(data.scheduleEdit ?? data.allowSchedule ?? defaults.scheduleEdit),
+            scheduleView: Boolean(
+              data.scheduleView ?? data.allowSchedule ?? defaults.scheduleView
+            ),
+            scheduleCreate: Boolean(
+              data.scheduleCreate ?? data.allowSchedule ?? defaults.scheduleCreate
+            ),
+            scheduleEdit: Boolean(
+              data.scheduleEdit ?? data.allowSchedule ?? defaults.scheduleEdit
+            ),
             scheduleDelete: Boolean(data.scheduleDelete ?? defaults.scheduleDelete),
             scheduleApprove: Boolean(data.scheduleApprove ?? defaults.scheduleApprove),
             allowExport: Boolean(data.allowExport ?? defaults.allowExport),
             activityView: Boolean(data.activityView ?? defaults.activityView),
             allowSupabase: Boolean(data.allowSupabase ?? defaults.allowSupabase),
+            modulePerms: defaults.modulePerms,
             note: String(data.note || ''),
             grantedBy: currentUser.email,
             isEdit: false,
@@ -2005,6 +2427,44 @@ function MainApp() {
   // ============================================================================
   // Render Gates
   // ============================================================================
+  if (orphanedCallback) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-white border border-slate-200 rounded-xl p-6 space-y-4 text-center">
+          <div className="h-10 w-10 rounded-lg bg-blue-600 text-white flex items-center justify-center mx-auto">
+            <ScanBarcode className="h-5 w-5" />
+          </div>
+          <h1 className="text-lg font-bold text-slate-900">
+            {orphanedCallback.error
+              ? 'Đăng nhập Google chưa hoàn tất'
+              : 'Đã nhận phản hồi xác thực từ Google'}
+          </h1>
+          <p className="text-sm text-slate-600 leading-relaxed">
+            {orphanedCallback.error
+              ? orphanedCallback.error
+              : 'Do trình duyệt chặn giao tiếp giữa cửa sổ popup và khung nhúng, bạn có thể đóng cửa sổ này và dùng Mã OTP Email, hoặc nhấn nút bên dưới để sử dụng ứng dụng trực tiếp trên tab trình duyệt riêng.'}
+          </p>
+          <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={() => window.location.assign(window.location.origin)}
+              className="min-h-[44px] flex-1 px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+            >
+              Mở ứng dụng ở tab này
+            </button>
+            <button
+              type="button"
+              onClick={() => window.close()}
+              className="min-h-[44px] px-4 py-2.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50"
+            >
+              Đóng cửa sổ
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!authReady || (currentUser && !accessChecked)) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
@@ -2024,7 +2484,10 @@ function MainApp() {
     return (
       <SignInScreen
         supabaseConfig={supabaseConfig}
-        onSupabaseSessionReady={() => setSyncState('connecting')}
+        onSupabaseSessionReady={(session) => {
+          if (session) setSupabaseSession(session);
+          setSyncState('connecting');
+        }}
       />
     );
   }
@@ -2042,193 +2505,278 @@ function MainApp() {
   }
 
   const isStoreManager = permissions.role === 'store_manager';
-
-  const tabMeta: Record<AppTab, { title: string; subtitle: string }> = {
-    scanner: {
-      title: 'Quét & Xuất mã vạch',
-      subtitle:
-        'Quét liên tục bằng camera hoặc súng USB, lưu trữ trực tuyến và xuất Excel',
-    },
-    schedule: {
-      title: 'Lịch làm việc',
-      subtitle:
-        'Đăng ký ca làm, phê duyệt lịch tuần và cập nhật trạng thái thời gian thực',
-    },
-    activity: {
-      title: 'Nhật ký hoạt động',
-      subtitle:
-        'Theo dõi lịch sử thêm, sửa, xóa, phê duyệt và xuất dữ liệu của toàn đội',
-    },
-    access: {
-      title: 'Phân quyền hệ thống',
-      subtitle:
-        'Quản lý 4 vai trò (Quản lý siêu thị, Giám sát, Trưởng ca, Nhân viên) và quyền từng phân hệ',
-    },
-    account: {
-      title: permissions.allowSupabase
-        ? 'Tài khoản & Đồng bộ Supabase'
-        : 'Thông tin tài khoản',
-      subtitle: permissions.allowSupabase
-        ? 'Cấu hình kết nối PostgreSQL Supabase Realtime, RLS và bảo toàn dữ liệu'
-        : 'Xem vai trò và quyền truy cập hiện tại của bạn',
-    },
+  const canSeeTab = (tab: AppTab): boolean => {
+    if (tab === 'supabase' && permissions.allowSupabase) return true;
+    return Boolean(permissions.modules[tab]);
   };
 
-  const navItems: {
-    id: AppTab;
-    label: string;
-    mobileLabel: string;
-    icon: typeof ScanBarcode;
-    badge?: string | number;
-    visible: boolean;
-  }[] = [
-    {
-      id: 'scanner',
-      label: 'Quét & Xuất mã vạch',
-      mobileLabel: 'Quét mã',
-      icon: ScanBarcode,
-      badge: scans.length,
-      visible: permissions.barcodeView,
-    },
-    {
-      id: 'schedule',
-      label: 'Lịch làm việc',
-      mobileLabel: 'Lịch làm',
-      icon: CalendarDays,
-      badge: schedules.length,
-      visible: permissions.scheduleView,
-    },
-    {
-      id: 'activity',
-      label: 'Nhật ký hoạt động',
-      mobileLabel: 'Nhật ký',
-      icon: History,
-      badge: activityLogs.length,
-      visible: permissions.activityView,
-    },
-    {
-      id: 'access',
-      label: 'Phân quyền',
-      mobileLabel: 'Phân quyền',
-      icon: ShieldCheck,
-      badge: authorizedMembers.length,
-      visible: isStoreManager,
-    },
-    {
-      id: 'account',
-      label: permissions.allowSupabase ? 'Liên kết Supabase' : 'Tài khoản',
-      mobileLabel: permissions.allowSupabase ? 'Supabase' : 'Tài khoản',
-      icon: permissions.allowSupabase ? Database : UserCircle,
-      badge: permissions.allowSupabase
-        ? backendMode === 'supabase'
-          ? 'Realtime'
-          : supabaseReady
-            ? 'Sẵn sàng'
-            : 'Chưa cài'
-        : undefined,
-      visible: true,
-    },
-  ];
+  const selectTab = (tab: AppTab) => {
+    setActiveTab(tab);
+    setMobileMenuOpen(false);
+  };
 
-  const visibleNavItems = navItems.filter((item) => item.visible);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const myTodaySchedules = schedules.filter(
+    (s) =>
+      s.workDate === todayStr &&
+      normalizeEmail(s.ownerEmail) === normalizeEmail(currentUser.email) &&
+      s.status !== 'cancelled'
+  );
+
+  const sidebarCompact = uiPrefs.compactSidebar;
+
+  const renderSidebarNav = (mobileMode = false) => (
+    <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
+      {NAV_GROUPS.map((group) => {
+        const items = NAV_ITEMS.filter(
+          (item) => item.group === group.id && canSeeTab(item.id)
+        );
+        if (items.length === 0) return null;
+        const isCollapsed = !mobileMode && !sidebarCompact && collapsedGroups[group.id];
+
+        return (
+          <div key={group.id}>
+            {!sidebarCompact || mobileMode ? (
+              <button
+                type="button"
+                onClick={() =>
+                  setCollapsedGroups((prev) => ({
+                    ...prev,
+                    [group.id]: !prev[group.id],
+                  }))
+                }
+                className="w-full flex items-center justify-between px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-600"
+              >
+                <span>{group.label}</span>
+                {!mobileMode &&
+                  (isCollapsed ? (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  ))}
+              </button>
+            ) : (
+              <div className="h-px bg-slate-100 my-1.5 mx-2" />
+            )}
+
+            {!isCollapsed && (
+              <div className="mt-1 space-y-0.5">
+                {items.map((item) => {
+                  const Icon = TAB_ICONS[item.id];
+                  const isActive = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      title={item.label}
+                      onClick={() => selectTab(item.id)}
+                      className={`w-full min-h-[42px] flex items-center ${
+                        sidebarCompact && !mobileMode
+                          ? 'justify-center px-2'
+                          : 'justify-between px-3'
+                      } py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                        isActive
+                          ? 'bg-blue-50 text-blue-700 font-semibold'
+                          : 'text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <Icon className="h-[18px] w-[18px] shrink-0" />
+                        {(!sidebarCompact || mobileMode) && (
+                          <span className="truncate">{item.label}</span>
+                        )}
+                      </span>
+                      {(!sidebarCompact || mobileMode) && item.id === 'scanner' && (
+                        <span className="text-xs text-slate-400 tabular-nums">
+                          {scans.length}
+                        </span>
+                      )}
+                      {(!sidebarCompact || mobileMode) && item.id === 'schedule' && (
+                        <span className="text-xs text-slate-400 tabular-nums">
+                          {schedules.length}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row">
-      {/* Desktop Left Sidebar */}
-      <aside className="hidden md:flex md:w-64 lg:w-72 md:flex-col md:fixed md:inset-y-0 bg-white border-r border-slate-200 z-30">
-        <div className="h-16 px-6 flex items-center gap-2.5 border-b border-slate-200">
-          <div className="h-9 w-9 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0">
-            <ScanBarcode className="h-5 w-5" />
+      {/* Desktop / Tablet Collapsible Sidebar */}
+      <aside
+        className={`hidden md:flex md:flex-col md:fixed md:inset-y-0 bg-white border-r border-slate-200 z-30 transition-all duration-200 ${
+          sidebarCompact ? 'md:w-20' : 'md:w-64 lg:w-72'
+        }`}
+      >
+        <div
+          className={`h-16 px-4 flex items-center border-b border-slate-200 ${
+            sidebarCompact ? 'justify-center' : 'justify-between'
+          }`}
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="h-9 w-9 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0">
+              <ScanBarcode className="h-5 w-5" />
+            </div>
+            {!sidebarCompact && (
+              <span className="text-base font-bold tracking-tight text-slate-900 truncate">
+                Vận Hành TPCN
+              </span>
+            )}
           </div>
-          <span className="text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap">
-            ScanShift
-          </span>
+          {!sidebarCompact && (
+            <button
+              type="button"
+              onClick={() =>
+                setUiPrefs((prev) => ({ ...prev, compactSidebar: true }))
+              }
+              className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg"
+              aria-label="Thu gọn thanh bên"
+              title="Thu gọn thanh bên"
+            >
+              <PanelLeftClose className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
-        <nav className="flex-1 p-4 space-y-1.5" aria-label="Điều hướng chính">
-          {visibleNavItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveTab(item.id)}
-                className={`w-full min-h-[46px] flex items-center justify-between px-3.5 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                  isActive
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-slate-700 hover:bg-slate-100'
-                }`}
-              >
-                <span className="flex items-center gap-3">
-                  <Icon className="h-5 w-5 shrink-0" />
-                  <span>{item.label}</span>
-                </span>
-                {item.badge !== undefined && (
-                  <span
-                    className={`text-xs tabular-nums ${
-                      item.id === 'account' && backendMode === 'supabase'
-                        ? 'text-emerald-700'
-                        : 'text-slate-500'
-                    }`}
-                  >
-                    {item.badge}
-                  </span>
-                )}
-              </button>
-            );
-          })}
+        {sidebarCompact && (
+          <div className="px-2 pt-2 flex justify-center">
+            <button
+              type="button"
+              onClick={() =>
+                setUiPrefs((prev) => ({ ...prev, compactSidebar: false }))
+              }
+              className="p-2 text-slate-500 hover:text-slate-800 rounded-lg"
+              aria-label="Mở rộng thanh bên"
+              title="Mở rộng thanh bên"
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        <nav className="flex-1 flex flex-col overflow-hidden" aria-label="Điều hướng chính">
+          {renderSidebarNav(false)}
         </nav>
 
-        {/* User profile in sidebar footer */}
-        <div className="p-4 border-t border-slate-200 space-y-3">
-          <div className="flex items-center gap-3 min-w-0">
+        {/* User footer */}
+        <div className="p-3 border-t border-slate-200 space-y-2.5">
+          <button
+            type="button"
+            onClick={() => selectTab('staff')}
+            className={`w-full flex items-center gap-2.5 min-w-0 text-left p-1 rounded-lg hover:bg-slate-50 ${
+              sidebarCompact ? 'justify-center' : ''
+            }`}
+            title={currentUser.displayName}
+          >
             {currentUser.photoURL ? (
               <img
                 src={currentUser.photoURL}
                 alt={currentUser.displayName}
                 referrerPolicy="no-referrer"
-                className="h-10 w-10 rounded-full object-cover border border-slate-200 shrink-0"
+                className="h-9 w-9 rounded-full object-cover border border-slate-200 shrink-0"
               />
             ) : (
-              <div className="h-10 w-10 rounded-full bg-slate-900 text-white flex items-center justify-center font-bold text-sm shrink-0">
+              <div className="h-9 w-9 rounded-full bg-slate-900 text-white flex items-center justify-center font-bold text-sm shrink-0">
                 {currentUser.displayName.charAt(0).toUpperCase()}
               </div>
             )}
-            <div className="min-w-0">
-              <p className="text-sm font-bold text-slate-900 truncate">
-                {currentUser.displayName}
-              </p>
-              <p className="text-xs text-slate-500 truncate">
-                {ROLE_LABELS[permissions.role]} · {currentUser.email}
-              </p>
-            </div>
-          </div>
+            {!sidebarCompact && (
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-slate-900 truncate">
+                  {currentUser.displayName}
+                </p>
+                <p className="text-xs text-slate-500 truncate">
+                  {ROLE_LABELS[permissions.role]}
+                </p>
+              </div>
+            )}
+          </button>
 
           <button
             type="button"
             onClick={handleSignOut}
-            className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+            title="Đăng xuất"
+            className="w-full min-h-[40px] inline-flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
           >
-            <LogOut className="h-4 w-4" />
-            <span>Đăng xuất</span>
+            <LogOut className="h-4 w-4 shrink-0" />
+            {!sidebarCompact && <span>Đăng xuất</span>}
           </button>
         </div>
       </aside>
 
+      {/* Mobile Slide-Over Navigation Drawer */}
+      {mobileMenuOpen && (
+        <div className="md:hidden fixed inset-0 z-50 flex">
+          <div
+            className="fixed inset-0 bg-slate-900/50"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+          <div className="relative w-72 max-w-[85vw] bg-white h-full flex flex-col shadow-xl z-10">
+            <div className="h-14 px-4 flex items-center justify-between border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <div className="h-8 w-8 rounded-lg bg-blue-600 text-white flex items-center justify-center">
+                  <ScanBarcode className="h-4 w-4" />
+                </div>
+                <span className="font-bold text-slate-900">Vận Hành TPCN</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(false)}
+                className="p-2 text-slate-500 hover:text-slate-900"
+                aria-label="Đóng menu"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {renderSidebarNav(true)}
+
+            <div className="p-3 border-t border-slate-200 space-y-2.5">
+              <div className="text-xs text-slate-600 truncate px-1">
+                {currentUser.displayName} · {ROLE_LABELS[permissions.role]}
+              </div>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="w-full min-h-[42px] inline-flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>Đăng xuất</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main Content Area */}
-      <div className="flex-1 md:pl-64 lg:pl-72 flex flex-col min-w-0">
+      <div
+        className={`flex-1 flex flex-col min-w-0 transition-all duration-200 ${
+          sidebarCompact ? 'md:pl-20' : 'md:pl-64 lg:pl-72'
+        }`}
+      >
         {/* Mobile Compact Top App Bar (56px) */}
         <header className="md:hidden sticky top-0 z-30 h-14 bg-white/95 backdrop-blur-xs border-b border-slate-200 px-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
-            <div className="h-8 w-8 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0">
-              <ScanBarcode className="h-4 w-4" />
-            </div>
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              className="h-10 w-10 rounded-lg text-slate-700 hover:bg-slate-100 flex items-center justify-center shrink-0"
+              aria-label="Mở danh mục"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
             <span className="text-sm font-bold text-slate-900 truncate">
-              {tabMeta[activeTab].title}
+              {TAB_META[activeTab].title}
             </span>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             <SyncStatusBadge
               state={syncState}
               backendMode={backendMode}
@@ -2238,9 +2786,9 @@ function MainApp() {
             />
             <button
               type="button"
-              onClick={() => setActiveTab('account')}
-              className="min-h-[44px] min-w-[40px] flex items-center justify-end shrink-0"
-              aria-label="Mở thông tin tài khoản"
+              onClick={() => selectTab('staff')}
+              className="min-h-[40px] min-w-[36px] flex items-center justify-end shrink-0"
+              aria-label="Hồ sơ cá nhân"
             >
               {currentUser.photoURL ? (
                 <img
@@ -2258,11 +2806,11 @@ function MainApp() {
           </div>
         </header>
 
-        {/* Desktop Header */}
-        <header className="hidden md:flex h-16 bg-white border-b border-slate-200 px-8 items-center justify-between gap-6 sticky top-0 z-20">
+        {/* Desktop / Tablet Top Bar */}
+        <header className="hidden md:flex h-16 bg-white border-b border-slate-200 px-6 lg:px-8 items-center justify-between gap-4 sticky top-0 z-20">
           <div className="min-w-0">
-            <h1 className="text-xl font-bold text-slate-900 truncate">
-              {tabMeta[activeTab].title}
+            <h1 className="text-lg lg:text-xl font-bold text-slate-900 truncate">
+              {TAB_META[activeTab].title}
             </h1>
           </div>
 
@@ -2273,16 +2821,14 @@ function MainApp() {
               lastSyncedAt={lastSyncedAt}
               onRetrySync={handleForceResync}
             />
-
-            <span className="text-sm text-slate-500 whitespace-nowrap">
+            <span className="hidden lg:inline text-sm text-slate-500 whitespace-nowrap">
               {ROLE_LABELS[permissions.role]} · {currentUser.email}
             </span>
-
             {permissions.allowSupabase && (
               <button
                 type="button"
-                onClick={() => setActiveTab('account')}
-                className="min-h-[40px] inline-flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap"
+                onClick={() => selectTab('supabase')}
+                className="min-h-[38px] inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 whitespace-nowrap"
               >
                 <Database
                   className={`h-4 w-4 ${
@@ -2306,135 +2852,200 @@ function MainApp() {
         </header>
 
         {/* Main Viewport */}
-        <main className="flex-1 px-4 sm:px-6 lg:px-8 py-5 sm:py-7 pb-24 md:pb-10 max-w-7xl w-full mx-auto">
+        <main className="flex-1 px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-24 md:pb-10 max-w-7xl w-full mx-auto">
           <p className="text-sm text-slate-600 mb-5 hidden md:block">
-            {tabMeta[activeTab].subtitle}
+            {TAB_META[activeTab].subtitle}
           </p>
 
-          {activeTab === 'scanner' && permissions.barcodeView && (
-            <BarcodeScannerTab
-              scans={scans}
-              loading={scansLoading}
-              canCreate={permissions.barcodeCreate}
-              canEdit={permissions.barcodeEdit}
-              canDelete={permissions.barcodeDelete}
-              canExport={permissions.allowExport}
-              canSupabase={permissions.allowSupabase}
-              showOwnerEmail={permissions.scopeAll}
-              supabaseReady={supabaseReady}
-              isSyncing={isSyncing}
-              onAddOrIncrementScan={handleAddOrIncrementScan}
-              onUpdateQuantity={handleUpdateScanQuantity}
-              onUpdateNote={handleUpdateScanNote}
-              onDeleteScan={handleDeleteScan}
-              onClearSession={handleClearScans}
-              onSyncToSupabase={handleMigrateFromFirebase}
-              onExportLogged={(fileName, count) => {
-                void recordActivity(
-                  'export',
-                  'export',
-                  fileName,
-                  `Xuất báo cáo Excel mã vạch (${count} dòng): ${fileName}`
-                );
-              }}
-              onNotify={notify}
-            />
-          )}
+          <Suspense fallback={<ModuleSuspenseFallback />}>
+            {/* Group 1: Vận hành */}
+            {activeTab === 'overview' && canSeeTab('overview') && (
+              <OverviewTab
+                client={supabaseClient}
+                user={currentUser}
+                modules={permissions.modules}
+                onNavigate={selectTab}
+              />
+            )}
 
-          {activeTab === 'schedule' && permissions.scheduleView && (
-            <WorkScheduleTab
-              schedules={schedules}
-              loading={schedulesLoading}
-              defaultEmployeeName={currentUser.displayName}
-              canCreate={permissions.scheduleCreate}
-              canEdit={permissions.scheduleEdit}
-              canDelete={permissions.scheduleDelete}
-              canApprove={permissions.scheduleApprove}
-              canExport={permissions.allowExport}
-              canSupabase={permissions.allowSupabase}
-              showOwnerEmail={permissions.scopeAll}
-              isStoreManager={isStoreManager}
-              supabaseReady={supabaseReady}
-              isSyncing={isSyncing}
-              onCreateSchedule={handleCreateSchedule}
-              onUpdateSchedule={handleUpdateSchedule}
-              onDeleteSchedule={handleDeleteSchedule}
-              onSyncToSupabase={handleMigrateFromFirebase}
-              onExportLogged={(fileName, count) => {
-                void recordActivity(
-                  'export',
-                  'export',
-                  fileName,
-                  `Xuất Excel lịch làm việc (${count} ca): ${fileName}`
-                );
-              }}
-              onNotify={notify}
-            />
-          )}
+            {activeTab === 'schedule' && canSeeTab('schedule') && (
+              <WorkScheduleTab
+                client={supabaseClient}
+                schedules={schedules}
+                shifts={shifts}
+                leaveRules={leaveRules}
+                loading={schedulesLoading}
+                defaultEmployeeName={currentUser.displayName}
+                currentUserEmail={currentUser.email}
+                canCreate={permissions.scheduleCreate}
+                canEdit={permissions.scheduleEdit}
+                canDelete={permissions.scheduleDelete}
+                canApprove={permissions.scheduleApprove}
+                canExport={permissions.allowExport}
+                canSupabase={permissions.allowSupabase}
+                showOwnerEmail={permissions.scopeAll}
+                isStoreManager={isStoreManager}
+                supabaseReady={supabaseReady}
+                isSyncing={isSyncing}
+                onCreateSchedule={handleCreateSchedule}
+                onUpdateSchedule={handleUpdateSchedule}
+                onDeleteSchedule={handleDeleteSchedule}
+                onSyncToSupabase={handleMigrateFromFirebase}
+                onRefreshShifts={refreshShiftsAndRules}
+                onExportLogged={(fileName, count) => {
+                  void recordActivity(
+                    'export',
+                    'export',
+                    fileName,
+                    `Xuất lịch làm việc (${count} dòng): ${fileName}`
+                  );
+                }}
+                onNotify={notify}
+              />
+            )}
 
-          {activeTab === 'activity' && permissions.activityView && (
-            <ActivityLogTab logs={activityLogs} loading={activityLoading} />
-          )}
+            {activeTab === 'attendance' && canSeeTab('attendance') && (
+              <AttendanceTab
+                client={supabaseClient}
+                user={currentUser}
+                todaySchedules={myTodaySchedules}
+                shifts={shifts}
+                defaultPageSize={uiPrefs.defaultPageSize}
+                canExport={permissions.allowExport}
+                onNotify={notify}
+                onLogActivity={(action, targetId, summary) => {
+                  void recordActivity('attendance', action, targetId, summary);
+                }}
+              />
+            )}
 
-          {activeTab === 'access' && isStoreManager && (
-            <AccessControlTab
-              members={authorizedMembers}
-              loading={membersLoading}
-              currentUserEmail={currentUser.email}
-              onSaveMember={handleSaveAuthorizedMember}
-              onToggleActive={handleToggleMemberActive}
-              onDeleteMember={handleDeleteMember}
-              onNotify={notify}
-            />
-          )}
+            {activeTab === 'staff' && canSeeTab('staff') && (
+              <StaffProfileTab
+                client={supabaseClient}
+                user={currentUser}
+                members={authorizedMembers}
+                onProfileUpdated={(newName) => setCustomDisplayName(newName)}
+                onNotify={notify}
+              />
+            )}
 
-          {activeTab === 'account' && (
-            <div className="space-y-6 max-w-3xl">
-              {/* Account Summary Card */}
-              <div className="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                <div className="flex items-center gap-4 min-w-0">
-                  {currentUser.photoURL ? (
-                    <img
-                      src={currentUser.photoURL}
-                      alt={currentUser.displayName}
-                      referrerPolicy="no-referrer"
-                      className="h-14 w-14 rounded-full object-cover border border-slate-200 shrink-0"
-                    />
-                  ) : (
-                    <div className="h-14 w-14 rounded-full bg-slate-900 text-white flex items-center justify-center text-lg font-bold shrink-0">
-                      {currentUser.displayName.charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                  <div className="min-w-0">
-                    <h2 className="text-lg font-bold text-slate-900 truncate">
-                      {currentUser.displayName}
-                    </h2>
-                    <p className="text-sm text-slate-600 truncate">
-                      {currentUser.email} <span aria-hidden="true">·</span>{' '}
-                      {ROLE_LABELS[permissions.role]}
-                    </p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Nguồn dữ liệu:{' '}
-                      <span className="font-medium text-slate-800">
-                        {backendMode === 'supabase'
-                          ? 'Supabase Realtime + RLS'
-                          : 'Firebase Cloud (Dự phòng)'}
-                      </span>
-                    </p>
-                  </div>
-                </div>
+            {activeTab === 'feedback' && canSeeTab('feedback') && (
+              <CustomerFeedbackTab
+                client={supabaseClient}
+                user={currentUser}
+                canDeleteAny={
+                  permissions.role === 'store_manager' ||
+                  permissions.role === 'supervisor'
+                }
+                defaultPageSize={uiPrefs.defaultPageSize}
+                onNotify={notify}
+                onLogActivity={(action, targetId, summary) => {
+                  void recordActivity('feedback', action, targetId, summary);
+                }}
+              />
+            )}
 
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-red-600 bg-white border border-red-200 rounded-lg hover:bg-red-50 transition-colors whitespace-nowrap shrink-0"
-                >
-                  <LogOut className="h-4 w-4" />
-                  <span>Đăng xuất</span>
-                </button>
-              </div>
+            {/* Group 2: Hàng hóa */}
+            {activeTab === 'warehouse' && canSeeTab('warehouse') && (
+              <DataWarehouseTab
+                client={supabaseClient}
+                user={currentUser}
+                canEdit={permissions.role !== 'staff'}
+                canExport={permissions.allowExport}
+                defaultPageSize={uiPrefs.defaultPageSize}
+                onNotify={notify}
+                onLogActivity={(action, targetId, summary) => {
+                  void recordActivity('warehouse', action, targetId, summary);
+                }}
+              />
+            )}
 
-              {permissions.allowSupabase && (
+            {activeTab === 'scanner' && canSeeTab('scanner') && (
+              <BarcodeScannerTab
+                scans={scans}
+                loading={scansLoading}
+                canCreate={permissions.barcodeCreate}
+                canEdit={permissions.barcodeEdit}
+                canDelete={permissions.barcodeDelete}
+                canExport={permissions.allowExport}
+                canSupabase={permissions.allowSupabase}
+                showOwnerEmail={permissions.scopeAll}
+                supabaseReady={supabaseReady}
+                isSyncing={isSyncing}
+                onAddOrIncrementScan={handleAddOrIncrementScan}
+                onUpdateQuantity={handleUpdateScanQuantity}
+                onUpdateNote={handleUpdateScanNote}
+                onDeleteScan={handleDeleteScan}
+                onClearSession={handleClearScans}
+                onSyncToSupabase={handleMigrateFromFirebase}
+                onExportLogged={(fileName, count) => {
+                  void recordActivity(
+                    'export',
+                    'export',
+                    fileName,
+                    `Xuất báo cáo Excel mã vạch (${count} dòng): ${fileName}`
+                  );
+                }}
+                onNotify={notify}
+              />
+            )}
+
+            {activeTab === 'expiry' && canSeeTab('expiry') && (
+              <ExpiryControlTab
+                client={supabaseClient}
+                user={currentUser}
+                canDelete={
+                  permissions.role === 'store_manager' ||
+                  permissions.role === 'supervisor'
+                }
+                canExport={permissions.allowExport}
+                defaultPageSize={uiPrefs.defaultPageSize}
+                onNotify={notify}
+                onLogActivity={(action, targetId, summary) => {
+                  void recordActivity('expiry', action, targetId, summary);
+                }}
+              />
+            )}
+
+            {activeTab === 'returns' && canSeeTab('returns') && (
+              <GoodsReturnTab
+                client={supabaseClient}
+                user={currentUser}
+                canDelete={
+                  permissions.role === 'store_manager' ||
+                  permissions.role === 'supervisor'
+                }
+                canExport={permissions.allowExport}
+                defaultPageSize={uiPrefs.defaultPageSize}
+                onNotify={notify}
+                onLogActivity={(action, targetId, summary) => {
+                  void recordActivity('returns', action, targetId, summary);
+                }}
+              />
+            )}
+
+            {activeTab === 'promotions' && canSeeTab('promotions') && (
+              <PromotionsTab
+                client={supabaseClient}
+                user={currentUser}
+                canEdit={permissions.role !== 'staff'}
+                canDelete={
+                  permissions.role === 'store_manager' ||
+                  permissions.role === 'supervisor'
+                }
+                canExport={permissions.allowExport}
+                autoResetIdle={uiPrefs.autoResetPromoIdle}
+                defaultPageSize={uiPrefs.defaultPageSize}
+                onNotify={notify}
+                onLogActivity={(action, targetId, summary) => {
+                  void recordActivity('promotions', action, targetId, summary);
+                }}
+              />
+            )}
+
+            {/* Group 3: Hệ thống & dữ liệu */}
+            {activeTab === 'supabase' && canSeeTab('supabase') && (
+              <div className="space-y-6 max-w-3xl">
                 <SupabasePanel
                   config={supabaseConfig}
                   backendMode={backendMode}
@@ -2446,55 +3057,138 @@ function MainApp() {
                     members: authorizedMembers.length,
                   }}
                   isSyncing={isSyncing}
+                  currentUserEmail={currentUser.email}
+                  supabaseEmail={supabaseSession?.user?.email || null}
                   onSaveConfig={handleSaveSupabaseConfig}
                   onForceResync={handleForceResync}
                   onMigrateFromFirebase={handleMigrateFromFirebase}
-                  onSupabaseSignedIn={() => setSyncState('connecting')}
+                  onSupabaseSignedIn={(session) => {
+                    if (session) setSupabaseSession(session);
+                    setSyncState('connecting');
+                  }}
                   onNotify={notify}
                 />
-              )}
-            </div>
-          )}
+              </div>
+            )}
+
+            {activeTab === 'monitoring' && canSeeTab('monitoring') && (
+              <ResourceMonitorTab
+                config={supabaseConfig}
+                session={supabaseSession}
+              />
+            )}
+
+            {activeTab === 'storage' && canSeeTab('storage') && (
+              <StorageManagerTab
+                client={supabaseClient}
+                user={currentUser}
+                canManageAll={
+                  permissions.role === 'store_manager' ||
+                  permissions.role === 'supervisor'
+                }
+                defaultPageSize={uiPrefs.defaultPageSize}
+                onNotify={notify}
+                onLogActivity={(action, targetId, summary) => {
+                  void recordActivity('storage', action, targetId, summary);
+                }}
+              />
+            )}
+
+            {activeTab === 'settings' && canSeeTab('settings') && (
+              <SettingsTab
+                client={supabaseClient}
+                actorEmail={currentUser.email}
+                isStoreManager={isStoreManager}
+                leaveRules={leaveRules}
+                uiPrefs={uiPrefs}
+                onUpdateLeaveRules={(nextRules) => setLeaveRules(nextRules)}
+                onUpdateUiPrefs={(nextPrefs) => setUiPrefs(nextPrefs)}
+                onNotify={notify}
+              />
+            )}
+
+            {activeTab === 'access' && isStoreManager && (
+              <AccessControlTab
+                members={authorizedMembers}
+                loading={membersLoading}
+                currentUserEmail={currentUser.email}
+                onSaveMember={handleSaveAuthorizedMember}
+                onToggleActive={handleToggleMemberActive}
+                onDeleteMember={handleDeleteMember}
+                onNotify={notify}
+              />
+            )}
+
+            {activeTab === 'activity' && canSeeTab('activity') && (
+              <ActivityLogTab logs={activityLogs} loading={activityLoading} />
+            )}
+          </Suspense>
         </main>
       </div>
 
-      {/* Mobile Fixed Bottom Tab Bar */}
+      {/* Compact Mobile Bottom Bar (<= 15% screen height, 4 quick actions) */}
       <nav
         className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-xs border-t border-slate-200 pb-safe"
-        aria-label="Điều hướng di động"
+        aria-label="Điều hướng nhanh di động"
       >
-        <div
-          className={`grid h-16 ${
-            visibleNavItems.length === 1
-              ? 'grid-cols-1'
-              : visibleNavItems.length === 2
-                ? 'grid-cols-2'
-                : visibleNavItems.length === 3
-                  ? 'grid-cols-3'
-                  : visibleNavItems.length === 4
-                    ? 'grid-cols-4'
-                    : 'grid-cols-5'
-          }`}
-        >
-          {visibleNavItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveTab(item.id)}
-                className={`flex flex-col items-center justify-center gap-1 text-xs font-medium transition-colors ${
-                  isActive ? 'text-blue-600' : 'text-slate-500'
-                }`}
-              >
-                <Icon className="h-5 w-5" />
-                <span className="truncate max-w-full px-1">
-                  {item.mobileLabel}
-                </span>
-              </button>
-            );
-          })}
+        <div className="grid grid-cols-4 h-14">
+          {canSeeTab('overview') && (
+            <button
+              type="button"
+              onClick={() => selectTab('overview')}
+              className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium ${
+                activeTab === 'overview' ? 'text-blue-600' : 'text-slate-500'
+              }`}
+            >
+              <LayoutDashboard className="h-5 w-5" />
+              <span>Tổng quan</span>
+            </button>
+          )}
+          {canSeeTab('schedule') && (
+            <button
+              type="button"
+              onClick={() => selectTab('schedule')}
+              className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium ${
+                activeTab === 'schedule' ? 'text-blue-600' : 'text-slate-500'
+              }`}
+            >
+              <CalendarDays className="h-5 w-5" />
+              <span>Lịch làm</span>
+            </button>
+          )}
+          {canSeeTab('scanner') ? (
+            <button
+              type="button"
+              onClick={() => selectTab('scanner')}
+              className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium ${
+                activeTab === 'scanner' ? 'text-blue-600' : 'text-slate-500'
+              }`}
+            >
+              <ScanBarcode className="h-5 w-5" />
+              <span>Quét mã</span>
+            </button>
+          ) : canSeeTab('expiry') ? (
+            <button
+              type="button"
+              onClick={() => selectTab('expiry')}
+              className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium ${
+                activeTab === 'expiry' ? 'text-blue-600' : 'text-slate-500'
+              }`}
+            >
+              <CalendarClock className="h-5 w-5" />
+              <span>Hạn SD</span>
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen(true)}
+            className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium ${
+              mobileMenuOpen ? 'text-blue-600' : 'text-slate-500'
+            }`}
+          >
+            <Menu className="h-5 w-5" />
+            <span>Menu</span>
+          </button>
         </div>
       </nav>
 
@@ -2506,7 +3200,7 @@ function MainApp() {
 
       {/* Toast Stack */}
       {toasts.length > 0 && (
-        <div className="fixed bottom-20 md:bottom-6 right-4 left-4 md:left-auto md:w-96 z-50 space-y-2 pointer-events-none">
+        <div className="fixed bottom-16 md:bottom-6 right-4 left-4 md:left-auto md:w-96 z-50 space-y-2 pointer-events-none">
           {toasts.map((toast) => (
             <div
               key={toast.id}

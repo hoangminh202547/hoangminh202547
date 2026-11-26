@@ -11,8 +11,16 @@ interface ActivityLogTabProps {
 const MODULE_LABELS: Record<ActivityModule, string> = {
   barcode: 'Mã vạch',
   schedule: 'Lịch làm việc',
+  attendance: 'Chấm công',
+  staff: 'Nhân sự',
+  feedback: 'Ý kiến khách hàng',
+  warehouse: 'Kho dữ liệu',
+  expiry: 'Kiểm soát HSD',
+  returns: 'Đổi trả hàng',
+  promotions: 'Khuyến mãi',
+  storage: 'Quản lý Storage',
   access: 'Phân quyền',
-  export: 'Xuất Excel',
+  export: 'Xuất dữ liệu',
   system: 'Hệ thống',
 };
 
@@ -69,21 +77,35 @@ export function ActivityLogTab({ logs, loading }: ActivityLogTabProps) {
           </p>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <p className="text-xs font-medium text-slate-500">Thao tác mã vạch</p>
+          <p className="text-xs font-medium text-slate-500">Thao tác vận hành</p>
           <p className="mt-1 text-2xl font-bold text-blue-600 tabular-nums">
-            {logs.filter((l) => l.module === 'barcode').length}
+            {
+              logs.filter((l) =>
+                ['schedule', 'attendance', 'staff', 'feedback'].includes(l.module)
+              ).length
+            }
           </p>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <p className="text-xs font-medium text-slate-500">Thao tác lịch làm việc</p>
+          <p className="text-xs font-medium text-slate-500">Thao tác hàng hóa</p>
           <p className="mt-1 text-2xl font-bold text-emerald-600 tabular-nums">
-            {logs.filter((l) => l.module === 'schedule').length}
+            {
+              logs.filter((l) =>
+                ['barcode', 'warehouse', 'expiry', 'returns', 'promotions'].includes(
+                  l.module
+                )
+              ).length
+            }
           </p>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <p className="text-xs font-medium text-slate-500">Thay đổi phân quyền</p>
+          <p className="text-xs font-medium text-slate-500">Hệ thống &amp; Phân quyền</p>
           <p className="mt-1 text-2xl font-bold text-slate-900 tabular-nums">
-            {logs.filter((l) => l.module === 'access').length}
+            {
+              logs.filter((l) =>
+                ['access', 'storage', 'system', 'export'].includes(l.module)
+              ).length
+            }
           </p>
         </div>
       </div>
@@ -111,11 +133,11 @@ export function ActivityLogTab({ logs, loading }: ActivityLogTabProps) {
               aria-label="Lọc theo phân hệ"
             >
               <option value="ALL">Tất cả phân hệ</option>
-              <option value="barcode">Mã vạch</option>
-              <option value="schedule">Lịch làm việc</option>
-              <option value="access">Phân quyền</option>
-              <option value="export">Xuất Excel</option>
-              <option value="system">Hệ thống</option>
+              {(Object.keys(MODULE_LABELS) as ActivityModule[]).map((mod) => (
+                <option key={mod} value={mod}>
+                  {MODULE_LABELS[mod]}
+                </option>
+              ))}
             </select>
 
             <select

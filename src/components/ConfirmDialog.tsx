@@ -7,6 +7,7 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: 'danger' | 'primary';
+  danger?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -18,10 +19,14 @@ export function ConfirmDialog({
   confirmLabel = 'Xác nhận',
   cancelLabel = 'Hủy bỏ',
   variant = 'danger',
+  danger,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
   if (!open) return null;
+
+  const effectiveVariant =
+    danger === true ? 'danger' : danger === false ? 'primary' : variant;
 
   return (
     <div
@@ -35,7 +40,7 @@ export function ConfirmDialog({
           <div className="flex items-start gap-3">
             <div
               className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
-                variant === 'danger'
+                effectiveVariant === 'danger'
                   ? 'bg-red-50 text-red-600'
                   : 'bg-blue-50 text-blue-600'
               }`}
@@ -76,7 +81,7 @@ export function ConfirmDialog({
             type="button"
             onClick={onConfirm}
             className={`min-h-[44px] px-5 py-2.5 text-sm font-medium text-white rounded-lg transition-colors whitespace-nowrap ${
-              variant === 'danger'
+              effectiveVariant === 'danger'
                 ? 'bg-red-600 hover:bg-red-700'
                 : 'bg-blue-600 hover:bg-blue-700'
             }`}

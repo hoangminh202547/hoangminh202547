@@ -5,12 +5,14 @@ import {
   type SupabaseClient,
 } from '@supabase/supabase-js';
 import schemaSql from '../../supabase/schema.sql?raw';
+import migration002Sql from '../../supabase/migrations/002_full_erp.sql?raw';
 import type {
   ActivityAction,
   ActivityLog,
   ActivityModule,
   AuthorizedEmail,
   BarcodeScan,
+  ModuleAccessFlags,
   ScheduleStatus,
   ShiftType,
   SupabaseConfig,
@@ -20,6 +22,7 @@ import type {
 import { emailToKey, normalizeEmail, normalizeRole } from './permissions';
 
 export const SUPABASE_SCHEMA_SQL = schemaSql;
+export const SUPABASE_MIGRATION_002_SQL = migration002Sql;
 
 /**
  * In-memory storage adapter for Supabase Auth so auth tokens stay strictly
@@ -46,20 +49,50 @@ const sharedMemoryStorage = new MemoryAuthStorage();
 let cachedClientKey = '';
 let cachedClient: SupabaseClient | null = null;
 
+export const SUPABASE_OAUTH_CHANNEL = 'scanshift_supabase_oauth';
+
+export function normalizeSupabaseUrl(raw: string): string {
+  return raw.trim().replace(/\/+$/, '');
+}
+
 export function getEnvSupabaseConfig(): SupabaseConfig {
   const url = (import.meta.env.VITE_SUPABASE_URL as string | undefined) || '';
   const anonKey =
     (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) || '';
-  return { url: url.trim(), anonKey: anonKey.trim() };
+  return { url: normalizeSupabaseUrl(url), anonKey: anonKey.trim() };
+}
+
+export function getSupabaseUrlError(rawUrl: string): string | null {
+  const trimmed = normalizeSupabaseUrl(rawUrl);
+  if (!trimmed) return 'Vui lòng nhập Supabase Project URL.';
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return 'URL Supabase phải bắt đầu bằng https://';
+    }
+    if (
+      parsed.hostname === 'supabase.com' ||
+      parsed.pathname.includes('/dashboard/')
+    ) {
+      return 'Đây là link trang quản trị Dashboard. Hãy dùng Project URL dạng https://<project-ref>.supabase.co (trong Project Settings -> API).';
+    }
+    return null;
+  } catch {
+    return 'URL Supabase không đúng định dạng (VD: https://abcdefgh.supabase.co).';
+  }
 }
 
 export function isValidSupabaseConfig(config: SupabaseConfig): boolean {
-  if (!config.url || !config.anonKey) return false;
+  if (!config.url || !config.anonKey.trim()) return false;
+  return getSupabaseUrlError(config.url) === null;
+}
+
+export function isInsideIframe(): boolean {
+  if (typeof window === 'undefined') return false;
   try {
-    const parsed = new URL(config.url);
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+    return window.self !== window.top;
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -67,12 +100,14 @@ export function getSupabaseClient(
   config: SupabaseConfig
 ): SupabaseClient | null {
   if (!isValidSupabaseConfig(config)) return null;
-  const key = `${config.url.trim()}::${config.anonKey.trim()}`;
+  const cleanUrl = normalizeSupabaseUrl(config.url);
+  const cleanKey = config.anonKey.trim();
+  const key = `${cleanUrl}::${cleanKey}`;
   if (cachedClient && cachedClientKey === key) {
     return cachedClient;
   }
   cachedClientKey = key;
-  cachedClient = createClient(config.url.trim(), config.anonKey.trim(), {
+  cachedClient = createClient(cleanUrl, cleanKey, {
     auth: {
       storage: sharedMemoryStorage,
       persistSession: true,
@@ -96,14 +131,132 @@ export function resetCachedSupabaseClient(): void {
   cachedClientKey = '';
 }
 
+export function formatSupabaseAuthError(err: unknown): string {
+  const raw =
+    err instanceof Error
+      ? err.message
+      : typeof err === 'string'
+        ? err
+        : 'Xác thực Supabase Auth thất bại.';
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('invalid login credentials')) {
+    return 'Email hoặc mật khẩu chưa đúng trên Supabase Auth (nếu chưa có tài khoản Supabase Auth, hãy chuyển sang tab Đăng ký hoặc dùng Mã OTP Email).';
+  }
+  if (lower.includes('email not confirmed')) {
+    return 'Email chưa được xác nhận trên Supabase Auth. Hãy nhập mã xác nhận 6 số gửi về Gmail hoặc tắt Confirm Email trong Supabase Dashboard -> Authentication -> Providers -> Email.';
+  }
+  if (lower.includes('user already registered')) {
+    return 'Email này đã được tạo trên Supabase Auth trước đó. Hãy chuyển sang "Đăng nhập" bằng mật khẩu hoặc dùng Mã OTP Email.';
+  }
+  if (lower.includes('unsupported provider') || lower.includes('provider is not enabled')) {
+    return 'Google OAuth chưa được bật trên Supabase Project này. Hãy vào Supabase Dashboard -> Authentication -> Providers -> Google để bật, hoặc dùng Mã OTP Email / Mật khẩu ngay bên dưới.';
+  }
+  if (lower.includes('signups not allowed')) {
+    return 'Dự án Supabase đang tắt cho phép đăng ký tài khoản mới (Allow new users to sign up). Hãy bật trong Authentication -> Providers -> Email.';
+  }
+  if (lower.includes('rate limit') || lower.includes('security purposes')) {
+    return 'Gửi yêu cầu quá nhanh (giới hạn gửi email của Supabase). Vui lòng chờ khoảng 60 giây rồi thử lại.';
+  }
+  if (lower.includes('token has expired') || lower.includes('otp_expired') || lower.includes('invalid otp')) {
+    return 'Mã OTP không đúng hoặc đã hết hạn. Vui lòng yêu cầu gửi lại mã mới.';
+  }
+  if (lower.includes('invalid api key') || lower.includes('apikey')) {
+    return 'Supabase Anon Key không đúng. Hãy kiểm tra lại khóa công khai (anon / public) trong Project Settings -> API.';
+  }
+  if (lower.includes('failed to fetch') || lower.includes('networkerror')) {
+    return 'Không kết nối được tới máy chủ Supabase. Kiểm tra lại Project URL hoặc kết nối mạng.';
+  }
+  if (lower.includes('code verifier')) {
+    return 'Phiên xác thực PKCE bị gián đoạn giữa các cửa sổ. Vui lòng thử lại trong tab trình duyệt riêng hoặc dùng Mã OTP Email.';
+  }
+  return raw;
+}
+
+export interface SupabaseAuthSettings {
+  ok: boolean;
+  googleEnabled: boolean;
+  emailEnabled: boolean;
+  mailerAutoconfirm: boolean;
+  disableSignup: boolean;
+  error?: string;
+}
+
+export async function fetchSupabaseAuthSettings(
+  config: SupabaseConfig
+): Promise<SupabaseAuthSettings> {
+  const urlErr = getSupabaseUrlError(config.url);
+  if (urlErr || !config.anonKey.trim()) {
+    return {
+      ok: false,
+      googleEnabled: false,
+      emailEnabled: false,
+      mailerAutoconfirm: false,
+      disableSignup: false,
+      error: urlErr || 'Thiếu Supabase Anon Key.',
+    };
+  }
+  const cleanUrl = normalizeSupabaseUrl(config.url);
+  try {
+    const res = await fetch(`${cleanUrl}/auth/v1/settings`, {
+      headers: {
+        apikey: config.anonKey.trim(),
+      },
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        googleEnabled: false,
+        emailEnabled: false,
+        mailerAutoconfirm: false,
+        disableSignup: false,
+        error:
+          res.status === 401 || res.status === 403
+            ? 'Anon Key không hợp lệ cho Project URL này.'
+            : `Máy chủ Supabase Auth phản hồi lỗi (${res.status}).`,
+      };
+    }
+    const json = (await res.json()) as {
+      external?: Record<string, boolean>;
+      disable_signup?: boolean;
+      mailer_autoconfirm?: boolean;
+    };
+    return {
+      ok: true,
+      googleEnabled: Boolean(json.external?.google),
+      emailEnabled: json.external?.email !== false,
+      mailerAutoconfirm: Boolean(json.mailer_autoconfirm),
+      disableSignup: Boolean(json.disable_signup),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      googleEnabled: false,
+      emailEnabled: false,
+      mailerAutoconfirm: false,
+      disableSignup: false,
+      error: formatSupabaseAuthError(err),
+    };
+  }
+}
+
+export interface OAuthCallbackDetection {
+  detected: boolean;
+  relayed: boolean;
+  missingOpener: boolean;
+  error?: string;
+}
+
 /**
  * Handles OAuth redirect callback if the current window is an OAuth popup
  * or top-level redirect returning with ?code= or #access_token=.
  */
 export async function handleSupabaseOAuthRedirectIfPresent(
   client: SupabaseClient | null
-): Promise<boolean> {
-  if (typeof window === 'undefined') return false;
+): Promise<OAuthCallbackDetection> {
+  if (typeof window === 'undefined') {
+    return { detected: false, relayed: false, missingOpener: false };
+  }
   const searchParams = new URLSearchParams(window.location.search);
   const hashParams = new URLSearchParams(
     window.location.hash.startsWith('#') ? window.location.hash.slice(1) : ''
@@ -120,56 +273,74 @@ export async function handleSupabaseOAuthRedirectIfPresent(
   const refreshToken = hashParams.get('refresh_token');
 
   if (!errorDesc && !code && !accessToken) {
-    return false;
+    return { detected: false, relayed: false, missingOpener: false };
   }
 
-  // If opened inside a popup, relay auth code or tokens back to the opener safely
-  if (window.opener && window.opener !== window) {
+  const payload = errorDesc
+    ? { type: 'SUPABASE_OAUTH_RESULT', error: errorDesc }
+    : accessToken && refreshToken
+      ? { type: 'SUPABASE_OAUTH_RESULT', accessToken, refreshToken }
+      : code
+        ? { type: 'SUPABASE_OAUTH_RESULT', code }
+        : null;
+
+  let relayed = false;
+
+  // 1) Relay via BroadcastChannel (survives COOP when same-origin storage isn't partitioned)
+  if (payload && typeof BroadcastChannel !== 'undefined') {
     try {
-      if (errorDesc) {
-        window.opener.postMessage(
-          { type: 'SUPABASE_OAUTH_RESULT', error: errorDesc },
-          window.location.origin
-        );
-      } else if (accessToken && refreshToken) {
-        window.opener.postMessage(
-          {
-            type: 'SUPABASE_OAUTH_RESULT',
-            accessToken,
-            refreshToken,
-          },
-          window.location.origin
-        );
-      } else if (code) {
-        window.opener.postMessage(
-          {
-            type: 'SUPABASE_OAUTH_RESULT',
-            code,
-          },
-          window.location.origin
-        );
-      }
-    } finally {
+      const bc = new BroadcastChannel(SUPABASE_OAUTH_CHANNEL);
+      bc.postMessage(payload);
+      bc.close();
+    } catch {
+      // Ignore BroadcastChannel errors
+    }
+  }
+
+  // 2) Relay directly via window.opener if preserved
+  if (payload && window.opener && window.opener !== window) {
+    try {
+      window.opener.postMessage(payload, window.location.origin);
+      relayed = true;
+    } catch {
+      // Ignore cross-origin postMessage errors
+    }
+    if (relayed) {
       window.close();
+      return {
+        detected: true,
+        relayed: true,
+        missingOpener: false,
+        error: errorDesc || undefined,
+      };
     }
-    return true;
   }
 
-  // Direct top-level callback (e.g. mobile browser tab)
+  // 3) Direct top-level callback (e.g. mobile browser tab or standalone tab)
   if (client) {
-    if (accessToken && refreshToken) {
-      await client.auth.setSession({
-        access_token: accessToken,
-        refresh_token: refreshToken,
-      });
-    } else if (code) {
-      await client.auth.exchangeCodeForSession(code);
+    try {
+      if (accessToken && refreshToken) {
+        await client.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+      } else if (code) {
+        await client.auth.exchangeCodeForSession(code);
+      }
+      const cleanUrl = `${window.location.origin}${window.location.pathname === '/auth/callback' ? '/' : window.location.pathname}`;
+      window.history.replaceState({}, document.title, cleanUrl);
+    } catch {
+      // Ignore exchange failure if verifier belonged to opener window
     }
-    const cleanUrl = `${window.location.origin}${window.location.pathname}`;
-    window.history.replaceState({}, document.title, cleanUrl);
   }
 
-  return true;
+  const isCallbackRoute = window.location.pathname === '/auth/callback';
+  return {
+    detected: true,
+    relayed: false,
+    missingOpener: isCallbackRoute && !window.opener,
+    error: errorDesc || undefined,
+  };
 }
 
 export async function signInWithSupabaseGooglePopup(
@@ -188,7 +359,9 @@ export async function signInWithSupabaseGooglePopup(
   });
 
   if (error || !data?.url) {
-    throw new Error(error?.message || 'Không thể khởi tạo đăng nhập Google.');
+    throw new Error(
+      error ? formatSupabaseAuthError(error) : 'Không thể khởi tạo đăng nhập Google.'
+    );
   }
 
   const width = 520;
@@ -204,22 +377,26 @@ export async function signInWithSupabaseGooglePopup(
 
   if (!popup) {
     throw new Error(
-      'Trình duyệt đã chặn cửa sổ bật lên (popup). Vui lòng cho phép popup để đăng nhập Gmail.'
+      'Trình duyệt đã chặn cửa sổ bật lên (popup). Vui lòng cho phép popup hoặc dùng Mã xác nhận OTP Email bên dưới.'
     );
   }
 
   return new Promise<Session>((resolve, reject) => {
     let settled = false;
+    let bc: BroadcastChannel | null = null;
 
     const cleanup = () => {
       window.removeEventListener('message', onMessage);
+      if (bc) {
+        bc.close();
+        bc = null;
+      }
       window.clearInterval(closedCheck);
       window.clearTimeout(timeoutId);
     };
 
-    const onMessage = async (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) return;
-      const payload = event.data as
+    const handlePayload = async (
+      payload:
         | {
             type?: string;
             code?: string;
@@ -227,15 +404,21 @@ export async function signInWithSupabaseGooglePopup(
             refreshToken?: string;
             error?: string;
           }
-        | undefined;
-
+        | undefined
+    ) => {
       if (!payload || payload.type !== 'SUPABASE_OAUTH_RESULT') return;
       if (settled) return;
       settled = true;
       cleanup();
 
+      try {
+        if (!popup.closed) popup.close();
+      } catch {
+        // Ignore cross-origin close
+      }
+
       if (payload.error) {
-        reject(new Error(payload.error));
+        reject(new Error(formatSupabaseAuthError(payload.error)));
         return;
       }
 
@@ -245,7 +428,9 @@ export async function signInWithSupabaseGooglePopup(
         if (exchangeErr || !exchanged.session) {
           reject(
             new Error(
-              exchangeErr?.message || 'Không thể đổi mã xác thực Google lấy phiên Supabase.'
+              exchangeErr
+                ? formatSupabaseAuthError(exchangeErr)
+                : 'Không thể đổi mã xác thực Google lấy phiên Supabase.'
             )
           );
           return;
@@ -266,18 +451,62 @@ export async function signInWithSupabaseGooglePopup(
         });
       if (sessionErr || !sessionData.session) {
         reject(
-          new Error(sessionErr?.message || 'Không thể thiết lập phiên Supabase.')
+          new Error(
+            sessionErr
+              ? formatSupabaseAuthError(sessionErr)
+              : 'Không thể thiết lập phiên Supabase.'
+          )
         );
         return;
       }
       resolve(sessionData.session);
     };
 
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      void handlePayload(
+        event.data as
+          | {
+              type?: string;
+              code?: string;
+              accessToken?: string;
+              refreshToken?: string;
+              error?: string;
+            }
+          | undefined
+      );
+    };
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        bc = new BroadcastChannel(SUPABASE_OAUTH_CHANNEL);
+        bc.onmessage = (event) => {
+          void handlePayload(
+            event.data as
+              | {
+                  type?: string;
+                  code?: string;
+                  accessToken?: string;
+                  refreshToken?: string;
+                  error?: string;
+                }
+              | undefined
+          );
+        };
+      } catch {
+        bc = null;
+      }
+    }
+
     const closedCheck = window.setInterval(() => {
       if (popup.closed && !settled) {
         settled = true;
         cleanup();
-        reject(new Error('Cửa sổ đăng nhập đã bị đóng trước khi hoàn tất.'));
+        reject(
+          new Error(
+            'Cửa sổ đăng nhập đã đóng trước khi hoàn tất (hãy kiểm tra Google Provider & Redirect URL trong Supabase Dashboard, hoặc dùng Mã OTP Email bên dưới).'
+          )
+        );
       }
     }, 500);
 
@@ -328,6 +557,10 @@ export function mapScheduleRow(r: Record<string, unknown>): WorkSchedule {
     title: String(r.title || ''),
     workDate: String(r.work_date || ''),
     shiftType: (String(r.shift_type || 'custom') as ShiftType) || 'custom',
+    shiftId: r.shift_id ? String(r.shift_id) : null,
+    isDayOff: Boolean(r.is_day_off),
+    overrideApproved: Boolean(r.override_approved),
+    overrideReason: String(r.override_reason || ''),
     startTime: String(r.start_time || '08:00'),
     endTime: String(r.end_time || '17:00'),
     location: String(r.location || ''),
@@ -369,6 +602,10 @@ export function mapAccessRow(r: Record<string, unknown>): AuthorizedEmail {
     allowExport: Boolean(r.allow_export ?? true),
     activityView: Boolean(r.activity_view ?? false),
     allowSupabase: Boolean(r.allow_supabase ?? false),
+    modulePerms:
+      r.module_perms && typeof r.module_perms === 'object'
+        ? (r.module_perms as Partial<ModuleAccessFlags>)
+        : undefined,
     note: String(r.note || ''),
     grantedBy: String(r.granted_by || ''),
     version: Number(r.version || 1),
@@ -404,10 +641,14 @@ export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
   message: string;
   tablesReady?: boolean;
 }> {
-  if (!isValidSupabaseConfig(config)) {
+  const urlError = getSupabaseUrlError(config.url);
+  if (urlError) {
+    return { ok: false, message: urlError };
+  }
+  if (!config.anonKey.trim()) {
     return {
       ok: false,
-      message: 'URL Supabase hoặc Anon Key không hợp lệ.',
+      message: 'Vui lòng nhập Supabase Anon / Public Key.',
     };
   }
   try {
@@ -683,6 +924,10 @@ export async function createWorkScheduleInSupabase(
     title: string;
     workDate: string;
     shiftType: ShiftType;
+    shiftId?: string | null;
+    isDayOff?: boolean;
+    overrideApproved?: boolean;
+    overrideReason?: string;
     startTime: string;
     endTime: string;
     location: string;
@@ -690,28 +935,34 @@ export async function createWorkScheduleInSupabase(
   }
 ): Promise<{ data?: WorkSchedule; error?: string }> {
   const now = new Date().toISOString();
+  const payload: Record<string, unknown> = {
+    id: params.id,
+    owner_id: params.ownerId,
+    owner_email: normalizeEmail(params.ownerEmail),
+    employee_name: params.employeeName,
+    title: params.title,
+    work_date: params.workDate,
+    shift_type: params.shiftType,
+    start_time: params.startTime,
+    end_time: params.endTime,
+    location: params.location,
+    status: 'registered',
+    note: params.note,
+    approved_by: '',
+    approved_at: null,
+    version: 1,
+    updated_by: normalizeEmail(params.ownerEmail),
+    created_at: now,
+    updated_at: now,
+  };
+  if (params.shiftId !== undefined) payload.shift_id = params.shiftId;
+  if (params.isDayOff !== undefined) payload.is_day_off = params.isDayOff;
+  if (params.overrideApproved !== undefined) payload.override_approved = params.overrideApproved;
+  if (params.overrideReason !== undefined) payload.override_reason = params.overrideReason;
+
   const { data, error } = await client
     .from('work_schedules')
-    .insert({
-      id: params.id,
-      owner_id: params.ownerId,
-      owner_email: normalizeEmail(params.ownerEmail),
-      employee_name: params.employeeName,
-      title: params.title,
-      work_date: params.workDate,
-      shift_type: params.shiftType,
-      start_time: params.startTime,
-      end_time: params.endTime,
-      location: params.location,
-      status: 'registered',
-      note: params.note,
-      approved_by: '',
-      approved_at: null,
-      version: 1,
-      updated_by: normalizeEmail(params.ownerEmail),
-      created_at: now,
-      updated_at: now,
-    })
+    .insert(payload)
     .select()
     .single();
 
@@ -734,6 +985,10 @@ export async function updateWorkScheduleWithVersion(
       title: string;
       workDate: string;
       shiftType: ShiftType;
+      shiftId: string | null;
+      isDayOff: boolean;
+      overrideApproved: boolean;
+      overrideReason: string;
       startTime: string;
       endTime: string;
       location: string;
@@ -758,6 +1013,18 @@ export async function updateWorkScheduleWithVersion(
   }
   if (params.updates.shiftType !== undefined) {
     dbUpdates.shift_type = params.updates.shiftType;
+  }
+  if (params.updates.shiftId !== undefined) {
+    dbUpdates.shift_id = params.updates.shiftId;
+  }
+  if (params.updates.isDayOff !== undefined) {
+    dbUpdates.is_day_off = params.updates.isDayOff;
+  }
+  if (params.updates.overrideApproved !== undefined) {
+    dbUpdates.override_approved = params.updates.overrideApproved;
+  }
+  if (params.updates.overrideReason !== undefined) {
+    dbUpdates.override_reason = params.updates.overrideReason;
   }
   if (params.updates.startTime !== undefined) {
     dbUpdates.start_time = params.updates.startTime;
@@ -841,6 +1108,7 @@ export async function saveUserAccessInSupabase(
     allowExport: boolean;
     activityView: boolean;
     allowSupabase: boolean;
+    modulePerms?: Partial<ModuleAccessFlags>;
     note: string;
     grantedBy: string;
     expectedVersion?: number;
@@ -851,7 +1119,7 @@ export async function saveUserAccessInSupabase(
   const id = emailToKey(cleanEmail);
   const now = new Date().toISOString();
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     email: cleanEmail,
     display_name: params.displayName.slice(0, 120),
     role: params.role,
@@ -873,6 +1141,9 @@ export async function saveUserAccessInSupabase(
     granted_by: normalizeEmail(params.grantedBy),
     updated_at: now,
   };
+  if (params.modulePerms) {
+    payload.module_perms = params.modulePerms;
+  }
 
   if (params.isEdit && params.expectedVersion !== undefined) {
     const { data, error } = await client

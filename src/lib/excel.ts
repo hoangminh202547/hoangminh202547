@@ -1,5 +1,17 @@
+import { readSheet } from 'read-excel-file/browser';
 import writeXlsxFile, { type Row } from 'write-excel-file/browser';
-import type { BarcodeScan, ScheduleStatus, ShiftType, WorkSchedule } from '../types';
+import type {
+  AttendanceRecord,
+  BarcodeScan,
+  ExpiryTrackingItem,
+  ProductCatalogItem,
+  PromotionItem,
+  ReturnRecordItem,
+  ScheduleStatus,
+  ShiftType,
+  SupplierPolicyItem,
+  WorkSchedule,
+} from '../types';
 
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '';
@@ -21,6 +33,67 @@ const HEADER_STYLE = {
   color: '#0F172A',
 };
 
+/**
+ * Strips ONLY trailing "(B)" suffix from product name and sets hasBBadge flag.
+ * Keeps productCode completely untouched.
+ */
+export function parseTrailingBadgeB(rawName: string): {
+  cleanName: string;
+  hasBBadge: boolean;
+} {
+  const trimmed = String(rawName || '').trim();
+  const match = /\s*\(B\)\s*$/i.exec(trimmed);
+  if (!match) {
+    return { cleanName: trimmed, hasBBadge: false };
+  }
+  return {
+    cleanName: trimmed.slice(0, match.index).trim(),
+    hasBBadge: true,
+  };
+}
+
+export function normalizeCellString(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  if (v instanceof Date) {
+    return v.toISOString().slice(0, 10);
+  }
+  return String(v).trim();
+}
+
+export function normalizeExcelDate(v: unknown): string {
+  if (v instanceof Date && !Number.isNaN(v.getTime())) {
+    const y = v.getFullYear();
+    const m = String(v.getMonth() + 1).padStart(2, '0');
+    const d = String(v.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const s = String(v ?? '').trim();
+  if (!s) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const dmy = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(s);
+  if (dmy) {
+    return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+  }
+  return s;
+}
+
+export function normalizeCellNumber(v: unknown, fallback = 0): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  const cleaned = String(v ?? '')
+    .replace(/[^\d.,-]/g, '')
+    .replace(/,/g, '');
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+export async function readExcelSheetRows(file: File): Promise<unknown[][]> {
+  const rows = await readSheet(file);
+  return rows.map((row) => row.map((cell) => (cell === null || cell === undefined ? '' : cell)));
+}
+
+// ============================================================================
+// Barcode & Schedule Exports (Preserved)
+// ============================================================================
 export async function exportBarcodesToExcel(
   scans: BarcodeScan[],
   sessionLabel = 'TatCa'
@@ -129,10 +202,7 @@ export async function exportBarcodesToExcel(
         ],
       },
     ],
-    {
-      fontFamily: 'Roboto',
-      fontSize: 11,
-    }
+    { fontFamily: 'Roboto', fontSize: 11 }
   ).toFile(fileName);
 
   return fileName;
@@ -177,7 +247,7 @@ export async function exportSchedulesToExcel(
     { type: String, value: item.workDate },
     { type: String, value: item.title },
     { type: String, value: item.employeeName },
-    { type: String, value: SHIFT_LABELS[item.shiftType] || item.shiftType },
+    { type: String, value: item.isDayOff ? 'Nghỉ DO' : SHIFT_LABELS[item.shiftType] || item.shiftType },
     { type: String, value: item.startTime },
     { type: String, value: item.endTime },
     { type: String, value: item.location || '' },
@@ -216,11 +286,353 @@ export async function exportSchedulesToExcel(
         ],
       },
     ],
-    {
-      fontFamily: 'Roboto',
-      fontSize: 11,
-    }
+    { fontFamily: 'Roboto', fontSize: 11 }
   ).toFile(fileName);
 
+  return fileName;
+}
+
+// ============================================================================
+// Attendance Excel Export
+// ============================================================================
+export async function exportAttendanceToExcel(records: AttendanceRecord[]): Promise<string> {
+  const header: Row = [
+    { value: 'STT', ...HEADER_STYLE },
+    { value: 'Ngày làm việc', ...HEADER_STYLE },
+    { value: 'Nhân viên', ...HEADER_STYLE },
+    { value: 'Email', ...HEADER_STYLE },
+    { value: 'Ca làm', ...HEADER_STYLE },
+    { value: 'Loại', ...HEADER_STYLE },
+    { value: 'Giờ vào (Server)', ...HEADER_STYLE },
+    { value: 'Giờ ra', ...HEADER_STYLE },
+    { value: 'Trạng thái', ...HEADER_STYLE },
+    { value: 'Lịch sử ghi chú', ...HEADER_STYLE },
+  ];
+
+  const rows: Row[] = records.map((item, idx) => [
+    { type: Number, value: idx + 1 },
+    { type: String, value: item.workDate },
+    { type: String, value: item.employeeName },
+    { type: String, value: item.ownerEmail },
+    { type: String, value: item.shiftName },
+    { type: String, value: item.isUnscheduled ? 'Ngoài lịch' : 'Theo lịch' },
+    { type: String, value: formatDateTime(item.checkInAt) },
+    { type: String, value: formatDateTime(item.checkOutAt) },
+    { type: String, value: item.status },
+    {
+      type: String,
+      value: item.notesHistory.map((n) => `[${n.type}] ${n.content}`).join(' | '),
+    },
+  ]);
+
+  const fileName = `ChamCong_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  await writeXlsxFile(
+    [{ sheet: 'Chấm công', data: [header, ...rows], columns: Array(10).fill({ width: 20 }) }],
+    { fontFamily: 'Roboto', fontSize: 11 }
+  ).toFile(fileName);
+  return fileName;
+}
+
+// ============================================================================
+// Warehouse Catalog: Template + Export
+// ============================================================================
+export async function downloadCatalogTemplate(): Promise<string> {
+  const header: Row = [
+    { value: 'STT', ...HEADER_STYLE },
+    { value: 'Mã hàng', ...HEADER_STYLE },
+    { value: 'Mã vạch', ...HEADER_STYLE },
+    { value: 'Tên hàng', ...HEADER_STYLE },
+    { value: 'ĐVT', ...HEADER_STYLE },
+    { value: 'Giá bán', ...HEADER_STYLE },
+    { value: 'Nhà cung cấp', ...HEADER_STYLE },
+  ];
+  const sample: Row = [
+    { type: Number, value: 1 },
+    { type: String, value: 'SP001' },
+    { type: String, value: '8935001234567' },
+    { type: String, value: 'Viên uống Vitamin C 500mg' },
+    { type: String, value: 'Hộp' },
+    { type: Number, value: 145000 },
+    { type: String, value: 'NCC Dược Phẩm A' },
+  ];
+  const fileName = 'Mau_DanhMucHang.xlsx';
+  await writeXlsxFile(
+    [{ sheet: 'Danh mục hàng', data: [header, sample], columns: [{ width: 6 }, { width: 16 }, { width: 20 }, { width: 32 }, { width: 12 }, { width: 14 }, { width: 24 }] }],
+    { fontFamily: 'Roboto', fontSize: 11 }
+  ).toFile(fileName);
+  return fileName;
+}
+
+export async function exportCatalogToExcel(items: ProductCatalogItem[]): Promise<string> {
+  const header: Row = [
+    { value: 'STT', ...HEADER_STYLE },
+    { value: 'Mã hàng', ...HEADER_STYLE },
+    { value: 'Mã vạch', ...HEADER_STYLE },
+    { value: 'Tên hàng', ...HEADER_STYLE },
+    { value: 'ĐVT', ...HEADER_STYLE },
+    { value: 'Giá bán', ...HEADER_STYLE },
+    { value: 'Nhà cung cấp', ...HEADER_STYLE },
+  ];
+  const rows: Row[] = items.map((item, idx) => [
+    { type: Number, value: idx + 1 },
+    { type: String, value: item.productCode },
+    { type: String, value: item.barcode },
+    { type: String, value: item.name },
+    { type: String, value: item.unit },
+    { type: Number, value: item.price },
+    { type: String, value: item.supplierName },
+  ]);
+  const fileName = `DanhMucHang_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  await writeXlsxFile(
+    [{ sheet: 'Danh mục hàng', data: [header, ...rows], columns: [{ width: 6 }, { width: 16 }, { width: 20 }, { width: 32 }, { width: 12 }, { width: 14 }, { width: 24 }] }],
+    { fontFamily: 'Roboto', fontSize: 11 }
+  ).toFile(fileName);
+  return fileName;
+}
+
+// ============================================================================
+// Supplier Return Policies: Template + Export
+// ============================================================================
+export async function downloadPolicyTemplate(): Promise<string> {
+  const header: Row = [
+    { value: 'STT', ...HEADER_STYLE },
+    { value: 'Ngành hàng', ...HEADER_STYLE },
+    { value: 'Tên NCC', ...HEADER_STYLE },
+    { value: 'Tên NCC HT', ...HEADER_STYLE },
+    { value: 'Tên hàng hóa', ...HEADER_STYLE },
+    { value: 'Đổi trả SP', ...HEADER_STYLE },
+    { value: 'Báo trước (tháng)', ...HEADER_STYLE },
+  ];
+  const sample: Row = [
+    { type: Number, value: 1 },
+    { type: String, value: 'TPCN' },
+    { type: String, value: 'Công ty TNHH Dược A' },
+    { type: String, value: 'NCC_DUOC_A' },
+    { type: String, value: 'Tất cả' },
+    { type: String, value: 'Đổi trả trước HSD 3 tháng' },
+    { type: Number, value: 3 },
+  ];
+  const fileName = 'Mau_ChinhSachDoiTraNCC.xlsx';
+  await writeXlsxFile(
+    [{ sheet: 'Chính sách NCC', data: [header, sample], columns: [{ width: 6 }, { width: 16 }, { width: 24 }, { width: 20 }, { width: 24 }, { width: 28 }, { width: 16 }] }],
+    { fontFamily: 'Roboto', fontSize: 11 }
+  ).toFile(fileName);
+  return fileName;
+}
+
+export async function exportPoliciesToExcel(items: SupplierPolicyItem[]): Promise<string> {
+  const header: Row = [
+    { value: 'STT', ...HEADER_STYLE },
+    { value: 'Ngành hàng', ...HEADER_STYLE },
+    { value: 'Tên NCC', ...HEADER_STYLE },
+    { value: 'Tên NCC HT', ...HEADER_STYLE },
+    { value: 'Tên hàng hóa', ...HEADER_STYLE },
+    { value: 'Đổi trả SP', ...HEADER_STYLE },
+    { value: 'Báo trước (tháng)', ...HEADER_STYLE },
+  ];
+  const rows: Row[] = items.map((item, idx) => [
+    { type: Number, value: idx + 1 },
+    { type: String, value: item.category },
+    { type: String, value: item.supplierName },
+    { type: String, value: item.supplierSystemName },
+    { type: String, value: item.productName },
+    { type: String, value: item.returnPolicy },
+    { type: Number, value: item.warnMonthsBefore },
+  ]);
+  const fileName = `ChinhSachDoiTraNCC_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  await writeXlsxFile(
+    [{ sheet: 'Chính sách NCC', data: [header, ...rows], columns: Array(7).fill({ width: 20 }) }],
+    { fontFamily: 'Roboto', fontSize: 11 }
+  ).toFile(fileName);
+  return fileName;
+}
+
+// ============================================================================
+// Expiry Control: Template + Export
+// ============================================================================
+export async function downloadExpiryTemplate(): Promise<string> {
+  const header: Row = [
+    { value: 'STT', ...HEADER_STYLE },
+    { value: 'Tên NCC HT', ...HEADER_STYLE },
+    { value: 'Mã hàng', ...HEADER_STYLE },
+    { value: 'Mã vạch', ...HEADER_STYLE },
+    { value: 'Tên hàng', ...HEADER_STYLE },
+    { value: 'ĐVT', ...HEADER_STYLE },
+    { value: 'Ngày sản xuất', ...HEADER_STYLE },
+    { value: 'Hạn sử dụng', ...HEADER_STYLE },
+    { value: 'Đổi trả SP', ...HEADER_STYLE },
+    { value: 'Ghi chú & cảnh báo', ...HEADER_STYLE },
+    { value: 'PT', ...HEADER_STYLE },
+  ];
+  const sample: Row = [
+    { type: Number, value: 1 },
+    { type: String, value: 'NCC_DUOC_A' },
+    { type: String, value: 'SP001' },
+    { type: String, value: '8935001234567' },
+    { type: String, value: 'Viên uống Vitamin C 500mg' },
+    { type: String, value: 'Hộp' },
+    { type: String, value: '2025-01-15' },
+    { type: String, value: '2027-01-15' },
+    { type: String, value: 'Đổi trả trước HSD 3 tháng' },
+    { type: String, value: 'Quầy kệ 1' },
+    { type: String, value: 'PT01' },
+  ];
+  const fileName = 'Mau_KiemSoatHSD.xlsx';
+  await writeXlsxFile(
+    [{ sheet: 'Kiểm soát HSD', data: [header, sample], columns: Array(11).fill({ width: 18 }) }],
+    { fontFamily: 'Roboto', fontSize: 11 }
+  ).toFile(fileName);
+  return fileName;
+}
+
+export async function exportExpiryToExcel(items: ExpiryTrackingItem[]): Promise<string> {
+  const header: Row = [
+    { value: 'STT', ...HEADER_STYLE },
+    { value: 'Tên NCC HT', ...HEADER_STYLE },
+    { value: 'Mã hàng', ...HEADER_STYLE },
+    { value: 'Mã vạch', ...HEADER_STYLE },
+    { value: 'Tên hàng', ...HEADER_STYLE },
+    { value: 'ĐVT', ...HEADER_STYLE },
+    { value: 'Ngày sản xuất', ...HEADER_STYLE },
+    { value: 'Hạn sử dụng', ...HEADER_STYLE },
+    { value: 'Đổi trả SP', ...HEADER_STYLE },
+    { value: 'Ghi chú & cảnh báo', ...HEADER_STYLE },
+    { value: 'PT', ...HEADER_STYLE },
+  ];
+  const rows: Row[] = items.map((item, idx) => [
+    { type: Number, value: idx + 1 },
+    { type: String, value: item.supplierSystemName },
+    { type: String, value: item.productCode },
+    { type: String, value: item.barcode },
+    { type: String, value: item.productName },
+    { type: String, value: item.unit },
+    { type: String, value: item.mfgDate },
+    { type: String, value: item.expDate },
+    { type: String, value: item.returnPolicy },
+    { type: String, value: item.note },
+    { type: String, value: item.ptCode },
+  ]);
+  const fileName = `KiemSoatHSD_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  await writeXlsxFile(
+    [{ sheet: 'Kiểm soát HSD', data: [header, ...rows], columns: Array(11).fill({ width: 18 }) }],
+    { fontFamily: 'Roboto', fontSize: 11 }
+  ).toFile(fileName);
+  return fileName;
+}
+
+// ============================================================================
+// Returns Export
+// ============================================================================
+export async function exportReturnsToExcel(items: ReturnRecordItem[]): Promise<string> {
+  const header: Row = [
+    { value: 'STT', ...HEADER_STYLE },
+    { value: 'PT', ...HEADER_STYLE },
+    { value: 'Tên NCC HT', ...HEADER_STYLE },
+    { value: 'Hàng đổi trả', ...HEADER_STYLE },
+    { value: 'Hình thức', ...HEADER_STYLE },
+    { value: 'Tiến độ', ...HEADER_STYLE },
+    { value: 'Ngày xử lý', ...HEADER_STYLE },
+    { value: 'Báo đổi trả', ...HEADER_STYLE },
+    { value: 'Cập nhật cuối', ...HEADER_STYLE },
+  ];
+  const rows: Row[] = items.map((item, idx) => [
+    { type: Number, value: idx + 1 },
+    { type: String, value: item.ptCode },
+    { type: String, value: item.supplierSystemName },
+    { type: String, value: item.productSummary },
+    { type: String, value: item.returnMethod },
+    { type: String, value: item.progress === 'completed' ? 'Đã xử lý' : 'Đang xử lý' },
+    { type: String, value: item.completedDate },
+    { type: String, value: item.reportedDate },
+    { type: String, value: item.lastUpdateNote },
+  ]);
+  const fileName = `DoiTraHangHoa_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  await writeXlsxFile(
+    [{ sheet: 'Đổi trả hàng hóa', data: [header, ...rows], columns: Array(9).fill({ width: 20 }) }],
+    { fontFamily: 'Roboto', fontSize: 11 }
+  ).toFile(fileName);
+  return fileName;
+}
+
+// ============================================================================
+// Promotions: Template + Export
+// ============================================================================
+export async function downloadPromotionTemplate(): Promise<string> {
+  const header: Row = [
+    { value: 'STT', ...HEADER_STYLE },
+    { value: 'Mã hàng', ...HEADER_STYLE },
+    { value: 'Mã vạch', ...HEADER_STYLE },
+    { value: 'Tên hàng', ...HEADER_STYLE },
+    { value: 'ĐVT', ...HEADER_STYLE },
+    { value: 'HSD', ...HEADER_STYLE },
+    { value: 'Số lượng', ...HEADER_STYLE },
+    { value: 'Tỷ lệ KM (%)', ...HEADER_STYLE },
+    { value: 'Giá bán', ...HEADER_STYLE },
+    { value: 'PT', ...HEADER_STYLE },
+    { value: 'Trạng thái', ...HEADER_STYLE },
+  ];
+  const sample: Row = [
+    { type: Number, value: 1 },
+    { type: String, value: 'SP001' },
+    { type: String, value: '8935001234567' },
+    { type: String, value: 'Viên uống Vitamin C 500mg (B)' },
+    { type: String, value: 'Hộp' },
+    { type: String, value: '2026-12-31' },
+    { type: Number, value: 12 },
+    { type: Number, value: 20 },
+    { type: Number, value: 150000 },
+    { type: String, value: 'PT01' },
+    { type: String, value: 'active' },
+  ];
+  const fileName = 'Mau_KhuyenMai.xlsx';
+  await writeXlsxFile(
+    [{ sheet: 'Khuyến mãi', data: [header, sample], columns: Array(11).fill({ width: 18 }) }],
+    { fontFamily: 'Roboto', fontSize: 11 }
+  ).toFile(fileName);
+  return fileName;
+}
+
+export async function exportPromotionsToExcel(items: PromotionItem[]): Promise<string> {
+  const header: Row = [
+    { value: 'STT', ...HEADER_STYLE },
+    { value: 'Mã hàng', ...HEADER_STYLE },
+    { value: 'Mã vạch', ...HEADER_STYLE },
+    { value: 'Tên hàng', ...HEADER_STYLE },
+    { value: 'Biểu tượng B', ...HEADER_STYLE },
+    { value: 'ĐVT', ...HEADER_STYLE },
+    { value: 'HSD', ...HEADER_STYLE },
+    { value: 'Số lượng', ...HEADER_STYLE },
+    { value: 'Tỷ lệ KM (%)', ...HEADER_STYLE },
+    { value: 'Giá bán', ...HEADER_STYLE },
+    { value: 'Giá KM', ...HEADER_STYLE },
+    { value: 'Trạng thái', ...HEADER_STYLE },
+  ];
+  const rows: Row[] = items.map((item, idx) => [
+    { type: Number, value: idx + 1 },
+    { type: String, value: item.productCode },
+    { type: String, value: item.barcode },
+    { type: String, value: item.productName },
+    { type: String, value: item.hasBBadge ? 'B' : '' },
+    { type: String, value: item.unit },
+    { type: String, value: item.expDate },
+    { type: Number, value: item.quantity },
+    { type: Number, value: item.discountRate },
+    { type: Number, value: item.regularPrice },
+    { type: Number, value: item.promoPrice },
+    {
+      type: String,
+      value:
+        item.status === 'active'
+          ? 'Đang áp dụng'
+          : item.status === 'scheduled'
+            ? 'Sắp diễn ra'
+            : 'Đã kết thúc',
+    },
+  ]);
+  const fileName = `KhuyenMai_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  await writeXlsxFile(
+    [{ sheet: 'Khuyến mãi', data: [header, ...rows], columns: Array(12).fill({ width: 16 }) }],
+    { fontFamily: 'Roboto', fontSize: 11 }
+  ).toFile(fileName);
   return fileName;
 }
