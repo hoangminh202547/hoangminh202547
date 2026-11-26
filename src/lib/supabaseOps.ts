@@ -1394,6 +1394,7 @@ export interface SupabaseUsageProxyResponse {
   available: boolean;
   reason?: string;
   message?: string;
+  httpStatus?: number;
   projectRef?: string | null;
   projectName?: string | null;
   region?: string | null;
@@ -1416,6 +1417,65 @@ const usageClientCache = new Map<
   { fetchedAt: number; data: SupabaseUsageProxyResponse }
 >();
 const usageInFlight = new Map<string, Promise<SupabaseUsageProxyResponse>>();
+
+function safeParseJsonObject(rawText: string): Record<string, unknown> | null {
+  const trimmed = rawText.trim();
+  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function mapProxyHttpFailure(status: number): SupabaseUsageProxyResponse {
+  if (status === 401) {
+    return {
+      available: false,
+      reason: 'unauthorized',
+      httpStatus: 401,
+      message:
+        'Phiên đăng nhập hoặc token giám sát không hợp lệ / đã hết hạn (HTTP 401).',
+    };
+  }
+  if (status === 403) {
+    return {
+      available: false,
+      reason: 'forbidden',
+      httpStatus: 403,
+      message:
+        'Tài khoản hoặc token thiếu quyền truy cập giám sát tài nguyên (HTTP 403).',
+    };
+  }
+  if (status === 429) {
+    return {
+      available: false,
+      reason: 'rate_limited',
+      httpStatus: 429,
+      message:
+        'API giám sát đang bị giới hạn tần suất yêu cầu (HTTP 429). Vui lòng thử lại sau ít phút.',
+    };
+  }
+  if (status >= 500) {
+    return {
+      available: false,
+      reason: 'vercel_server_error',
+      httpStatus: status,
+      message: `Lỗi máy chủ API trên Vercel hoặc dịch vụ trung gian (HTTP ${status}). Hãy kiểm tra Vercel Functions Log và Redeploy bản mới nhất.`,
+    };
+  }
+  return {
+    available: false,
+    reason: 'invalid_response',
+    httpStatus: status,
+    message: `API giám sát trả về phản hồi không đúng định dạng JSON (HTTP ${status}).`,
+  };
+}
 
 export async function fetchSupabaseUsageMetrics(
   supabaseUrl: string,
@@ -1440,7 +1500,7 @@ export async function fetchSupabaseUsageMetrics(
 
   const reqPromise = (async (): Promise<SupabaseUsageProxyResponse> => {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 12000);
+    const timer = globalThis.setTimeout(() => controller.abort(), 12000);
     try {
       const res = await fetch(
         `/api/supabase-usage${forceRefresh ? '?refresh=1' : ''}`,
@@ -1449,18 +1509,50 @@ export async function fetchSupabaseUsageMetrics(
             Authorization: `Bearer ${jwt}`,
             'X-Supabase-Url': supabaseUrl,
             'X-Supabase-Anon-Key': anonKey,
+            Accept: 'application/json',
           },
           cache: 'no-store',
           signal: controller.signal,
         }
       );
-      const data = (await res.json()) as SupabaseUsageProxyResponse;
+
+      const rawText = await res.text();
+      const parsed = safeParseJsonObject(rawText);
+
+      if (!parsed) {
+        return mapProxyHttpFailure(res.status || 502);
+      }
+
+      const data = parsed as unknown as SupabaseUsageProxyResponse;
+      if (!res.ok) {
+        const fallback = mapProxyHttpFailure(res.status);
+        return {
+          ...fallback,
+          ...data,
+          available: false,
+          httpStatus: res.status,
+          message:
+            typeof data.message === 'string' && data.message.trim()
+              ? data.message
+              : fallback.message,
+        };
+      }
+
       if (data.available) {
         usageClientCache.set(cacheKey, { fetchedAt: Date.now(), data });
       }
       return data;
+    } catch (err) {
+      return {
+        available: false,
+        reason: 'network_error',
+        message:
+          err instanceof Error && err.name === 'AbortError'
+            ? 'Hết thời gian chờ phản hồi từ máy chủ giám sát (12 giây).'
+            : 'Không thể kết nối tới API giám sát tài nguyên (/api/supabase-usage).',
+      };
     } finally {
-      window.clearTimeout(timer);
+      globalThis.clearTimeout(timer);
       usageInFlight.delete(cacheKey);
     }
   })();

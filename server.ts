@@ -3,7 +3,7 @@ import express, { type Request, type Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { handleSupabaseUsageRequest } from './api/_supabaseUsageService';
+import { GET as handleSupabaseUsageGet } from './api/supabase-usage.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -136,35 +136,32 @@ async function startServer() {
   });
 
   app.get('/api/supabase-usage', async (req: Request, res: Response) => {
-    const authHeader = String(req.headers.authorization || '');
-    const jwt = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-    const supabaseUrlRaw = String(
-      req.headers['x-supabase-url'] ||
-        process.env.VITE_SUPABASE_URL ||
-        process.env.SUPABASE_URL ||
-        process.env.NEXT_PUBLIC_SUPABASE_URL ||
-        ''
-    );
-    const anonKeyRaw = String(
-      req.headers['x-supabase-anon-key'] ||
-        process.env.VITE_SUPABASE_ANON_KEY ||
-        process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-        process.env.SUPABASE_ANON_KEY ||
-        process.env.SUPABASE_PUBLISHABLE_KEY ||
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-        ''
-    );
-
-    const result = await handleSupabaseUsageRequest({
-      jwt,
-      supabaseUrlRaw,
-      anonKeyRaw,
-      forceRefresh: req.query.refresh === '1',
-    });
-
-    res.setHeader('Cache-Control', 'no-store, max-age=0');
-    res.status(result.status).json(result.body);
+    try {
+      const protocol = req.protocol || 'http';
+      const host = req.get('host') || `localhost:${PORT}`;
+      const webReq = new Request(`${protocol}://${host}${req.originalUrl}`, {
+        method: 'GET',
+        headers: {
+          authorization: String(req.headers.authorization || ''),
+          'x-supabase-url': String(req.headers['x-supabase-url'] || ''),
+          'x-supabase-anon-key': String(req.headers['x-supabase-anon-key'] || ''),
+        },
+      });
+      const webRes = await handleSupabaseUsageGet(webReq);
+      const rawText = await webRes.text();
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
+      res.status(webRes.status).send(rawText);
+    } catch {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
+      res.status(500).json({
+        available: false,
+        reason: 'server_error',
+        httpStatus: 500,
+        message: 'Lỗi máy chủ API giám sát tài nguyên.',
+      });
+    }
   });
 
   if (process.env.NODE_ENV !== 'production') {

@@ -282,28 +282,58 @@ export function ResourceMonitorTab({
             <div>
               <h3 className="text-sm font-bold text-amber-950">
                 Chưa đọc được số liệu thực tế từ Supabase Management API
+                {usage.httpStatus ? ` (HTTP ${usage.httpStatus})` : ''}
               </h3>
               <p className="mt-1 text-sm text-amber-900">{usage.message}</p>
             </div>
           </div>
 
           <div className="bg-white border border-amber-200 rounded-lg p-3.5 text-xs text-slate-700 space-y-1.5">
-            <p className="font-bold text-slate-900">
-              Cấu hình biến môi trường Server trên Vercel (Production &amp; Preview):
-            </p>
-            <p>
-              1. Tạo Personal Access Token tại{' '}
-              <span className="font-mono">supabase.com/dashboard/account/tokens</span>.
-            </p>
-            <p>
-              2. Vào Vercel → Settings → Environment Variables, thêm 2 biến Server (tuyệt đối không dùng tiền tố <span className="font-mono">VITE_</span> hoặc <span className="font-mono">NEXT_PUBLIC_</span>):
-            </p>
-            <p className="font-mono text-slate-900 pl-3">
-              SUPABASE_ACCESS_TOKEN = sbp_...
-              <br />
-              SUPABASE_PROJECT_REF = buhpujisxuqmhccvnsfw
-            </p>
-            <p>3. Nhấn Redeploy trên Vercel rồi bấm “Cập nhật số liệu”.</p>
+            {usage.reason === 'rate_limited' ? (
+              <>
+                <p className="font-bold text-slate-900">
+                  API đang giới hạn tần suất yêu cầu:
+                </p>
+                <p>
+                  Vui lòng chờ 1–2 phút rồi nhấn “Cập nhật số liệu” để tải lại từ máy chủ.
+                </p>
+              </>
+            ) : usage.reason === 'vercel_server_error' || usage.reason === 'upstream_server_error' ? (
+              <>
+                <p className="font-bold text-slate-900">
+                  Khắc phục sự cố máy chủ API / dịch vụ trung gian:
+                </p>
+                <p>
+                  1. Đảm bảo đã triển khai bản cập nhật mới nhất lên Vercel (Redeploy).
+                </p>
+                <p>
+                  2. Kiểm tra lại Vercel → Logs (Functions) cho route{' '}
+                  <span className="font-mono">/api/supabase-usage</span> và thử tải lại sau ít phút.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-bold text-slate-900">
+                  Cấu hình biến môi trường Server trên Vercel (Production &amp; Preview):
+                </p>
+                <p>
+                  1. Tạo Access Token tại{' '}
+                  <span className="font-mono">supabase.com/dashboard/account/tokens</span>.
+                  Nếu dùng Scoped Token, cần bật đủ quyền{' '}
+                  <span className="font-mono">analytics_usage_read</span> (Analytics Read) và{' '}
+                  <span className="font-mono">database:read</span> (Read-Only Postgres).
+                </p>
+                <p>
+                  2. Vào Vercel → Settings → Environment Variables, cấu hình 2 biến Server (không dùng tiền tố <span className="font-mono">VITE_</span> hoặc <span className="font-mono">NEXT_PUBLIC_</span>):
+                </p>
+                <p className="font-mono text-slate-900 pl-3">
+                  SUPABASE_ACCESS_TOKEN
+                  <br />
+                  SUPABASE_PROJECT_REF = buhpujisxuqmhccvnsfw
+                </p>
+                <p>3. Nhấn Redeploy trên Vercel rồi bấm “Cập nhật số liệu”.</p>
+              </>
+            )}
           </div>
         </div>
       )}
