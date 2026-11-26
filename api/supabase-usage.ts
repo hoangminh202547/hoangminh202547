@@ -9,6 +9,13 @@ interface UsageCacheEntry {
 
 const usageCache = new Map<string, UsageCacheEntry>();
 
+function cleanEnv(val: string | undefined): string {
+  return (val || '')
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .trim();
+}
+
 function extractProjectRef(supabaseUrl: string): string {
   try {
     const u = new URL(supabaseUrl);
@@ -20,7 +27,7 @@ function extractProjectRef(supabaseUrl: string): string {
 }
 
 function normalizeUrl(raw: string): string {
-  return raw.trim().replace(/\/+$/, '');
+  return cleanEnv(raw).replace(/\/+$/, '');
 }
 
 async function verifyCallerAuthorization(
@@ -100,13 +107,19 @@ export async function GET(request: Request): Promise<Response> {
   const authHeader = request.headers.get('authorization') || '';
   const jwt = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
   const supabaseUrl = normalizeUrl(
-    request.headers.get('x-supabase-url') || process.env.VITE_SUPABASE_URL || ''
+    request.headers.get('x-supabase-url') ||
+      process.env.VITE_SUPABASE_URL ||
+      process.env.SUPABASE_URL ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      ''
   );
-  const anonKey = (
+  const anonKey = cleanEnv(
     request.headers.get('x-supabase-anon-key') ||
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    ''
-  ).trim();
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_ANON_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      ''
+  );
 
   if (!jwt || !supabaseUrl || !anonKey) {
     return Response.json(

@@ -89,6 +89,7 @@ import {
   deleteWorkScheduleInSupabase,
   fetchAllSyncedData,
   fetchMyAccessFromSupabase,
+  fetchRuntimeSupabaseConfig,
   getEnvSupabaseConfig,
   getSupabaseClient,
   handleSupabaseOAuthRedirectIfPresent,
@@ -507,9 +508,13 @@ function MainApp() {
     return null;
   }, [supabaseSession, firebaseUser, customDisplayName]);
 
-  const authReady = supabaseClient
-    ? supabaseAuthReady && firebaseAuthReady
-    : firebaseAuthReady;
+  const [runtimeConfigChecked, setRuntimeConfigChecked] = useState(() =>
+    isValidSupabaseConfig(getEnvSupabaseConfig())
+  );
+
+  const authReady =
+    runtimeConfigChecked &&
+    (supabaseClient ? supabaseAuthReady && firebaseAuthReady : firebaseAuthReady);
 
   const [activeTab, setActiveTab] = useState<AppTab>('overview');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -620,29 +625,54 @@ function MainApp() {
   );
 
   // ============================================================================
-  // Auth Initialization (Supabase Auth + Firebase Auth)
+  // Auth Initialization (Supabase Auth + Firebase Auth + Vercel Runtime Config)
   // ============================================================================
   useEffect(() => {
+    if (isValidSupabaseConfig(getEnvSupabaseConfig())) {
+      setRuntimeConfigChecked(true);
+      return;
+    }
+    let mounted = true;
+    void fetchRuntimeSupabaseConfig().then((cfg) => {
+      if (!mounted) return;
+      if (cfg) {
+        setSupabaseConfig((prev) =>
+          isValidSupabaseConfig(prev) ? prev : cfg
+        );
+      }
+      setRuntimeConfigChecked(true);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!runtimeConfigChecked || supabaseReady) return;
     void handleSupabaseOAuthRedirectIfPresent(null).then((res) => {
       if (res.detected && res.missingOpener) {
         setOrphanedCallback({ error: res.error });
       }
     });
-  }, []);
+  }, [runtimeConfigChecked, supabaseReady]);
 
   useEffect(() => {
     let mounted = true;
     if (!supabaseClient) {
       setSupabaseSession(null);
-      setSupabaseAuthReady(true);
+      setSupabaseAuthReady(runtimeConfigChecked);
       return;
     }
 
     const init = async () => {
       try {
         const res = await handleSupabaseOAuthRedirectIfPresent(supabaseClient);
-        if (mounted && res.detected && !res.relayed && !res.missingOpener) {
-          setOrphanedCallback(null);
+        if (mounted) {
+          if (res.detected && res.missingOpener) {
+            setOrphanedCallback({ error: res.error });
+          } else if (res.detected && !res.relayed) {
+            setOrphanedCallback(null);
+          }
         }
         const { data } = await supabaseClient.auth.getSession();
         if (mounted) {
@@ -666,7 +696,7 @@ function MainApp() {
       mounted = false;
       sub.subscription.unsubscribe();
     };
-  }, [supabaseClient]);
+  }, [supabaseClient, runtimeConfigChecked]);
 
   useEffect(() => {
     void testFirebaseConnection();
@@ -716,16 +746,20 @@ function MainApp() {
         if (snap.exists()) {
           const data = snap.data();
           const envCfg = getEnvSupabaseConfig();
-          const nextUrl =
-            envCfg.url || (typeof data.supabaseUrl === 'string' ? data.supabaseUrl : '');
-          const nextAnonKey =
-            envCfg.anonKey ||
-            (typeof data.supabaseAnonKey === 'string' ? data.supabaseAnonKey : '');
-          setSupabaseConfig((prev) =>
-            prev.url === nextUrl && prev.anonKey === nextAnonKey
-              ? prev
-              : { url: nextUrl, anonKey: nextAnonKey }
-          );
+          const fbUrl =
+            typeof data.supabaseUrl === 'string' ? data.supabaseUrl : '';
+          const fbKey =
+            typeof data.supabaseAnonKey === 'string'
+              ? data.supabaseAnonKey
+              : '';
+          setSupabaseConfig((prev) => {
+            const nextUrl = envCfg.url || prev.url || fbUrl;
+            const nextAnonKey = envCfg.anonKey || prev.anonKey || fbKey;
+            if (prev.url === nextUrl && prev.anonKey === nextAnonKey) {
+              return prev;
+            }
+            return { url: nextUrl, anonKey: nextAnonKey };
+          });
         }
       },
       (error) => reportFirestoreError(error, OperationType.GET, path)

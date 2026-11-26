@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { KeyRound, ScanBarcode } from 'lucide-react';
+import { KeyRound, MailCheck, ScanBarcode } from 'lucide-react';
 import { signInWithGmail as signInWithFirebaseGmail } from '../lib/firebase';
 import {
   fetchSupabaseAuthSettings,
@@ -21,11 +21,13 @@ export function SignInScreen({
   onSupabaseSessionReady,
 }: SignInScreenProps) {
   const supabaseAvailable = isValidSupabaseConfig(supabaseConfig);
-  const [showEmailForm, setShowEmailForm] = useState(false);
+  const [authPanel, setAuthPanel] = useState<'none' | 'otp' | 'password'>('none');
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -53,10 +55,71 @@ export function SignInScreen({
       if (raw.includes('popup-closed-by-user')) {
         setError('Cửa sổ đăng nhập Gmail đã bị đóng trước khi hoàn tất.');
       } else if (raw.includes('popup-blocked')) {
-        setError('Trình duyệt đã chặn cửa sổ bật lên. Vui lòng cho phép popup để đăng nhập.');
+        setError('Trình duyệt đã chặn cửa sổ bật lên. Vui lòng cho phép popup hoặc dùng Mã OTP Email.');
       } else {
         setError(formatSupabaseAuthError(err));
       }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSendOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supabaseAvailable) return;
+    const client = getSupabaseClient(supabaseConfig);
+    if (!client) return;
+
+    setLoading(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const callbackUrl =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}/auth/callback`
+          : undefined;
+      const { error: otpErr } = await client.auth.signInWithOtp({
+        email: cleanEmail,
+        options: {
+          shouldCreateUser: true,
+          emailRedirectTo: callbackUrl,
+        },
+      });
+      if (otpErr) throw otpErr;
+      setOtpSent(true);
+      setInfo(`Đã gửi mã OTP về ${cleanEmail}. Hãy kiểm tra hộp thư Gmail và nhập mã vào ô bên dưới.`);
+    } catch (err) {
+      setError(formatSupabaseAuthError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supabaseAvailable) return;
+    const client = getSupabaseClient(supabaseConfig);
+    if (!client) return;
+
+    setLoading(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const token = otpCode.replace(/\s+/g, '').trim();
+      const { data, error: verifyErr } = await client.auth.verifyOtp({
+        email: cleanEmail,
+        token,
+        type: 'email',
+      });
+      if (verifyErr) throw verifyErr;
+      if (!data.session) {
+        throw new Error('Mã OTP hợp lệ nhưng chưa nhận được phiên đăng nhập.');
+      }
+      onSupabaseSessionReady?.(data.session);
+    } catch (err) {
+      setError(formatSupabaseAuthError(err));
     } finally {
       setLoading(false);
     }
@@ -163,21 +226,79 @@ export function SignInScreen({
           </button>
 
           {supabaseAvailable && (
-            <button
-              type="button"
-              onClick={() => {
-                setShowEmailForm((v) => !v);
-                setError(null);
-                setInfo(null);
-              }}
-              className="text-xs text-slate-500 hover:text-slate-800 py-1"
-            >
-              {showEmailForm ? 'Ẩn đăng nhập Email' : 'Đăng nhập bằng Email & Mật khẩu'}
-            </button>
+            <div className="flex items-center justify-center gap-3 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthPanel((prev) => (prev === 'otp' ? 'none' : 'otp'));
+                  setError(null);
+                  setInfo(null);
+                }}
+                className="text-blue-600 hover:underline py-1"
+              >
+                {authPanel === 'otp' ? 'Ẩn OTP Email' : 'Mã OTP Email'}
+              </button>
+              <span className="text-slate-300" aria-hidden="true">·</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthPanel((prev) => (prev === 'password' ? 'none' : 'password'));
+                  setError(null);
+                  setInfo(null);
+                }}
+                className="text-slate-500 hover:text-slate-800 py-1"
+              >
+                {authPanel === 'password' ? 'Ẩn Mật khẩu' : 'Email & Mật khẩu'}
+              </button>
+            </div>
           )}
         </div>
 
-        {supabaseAvailable && showEmailForm && (
+        {supabaseAvailable && authPanel === 'otp' && (
+          <div className="text-left space-y-3 pt-2 border-t border-slate-100">
+            <form onSubmit={handleSendOtp} className="space-y-2.5">
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Email công việc / Gmail"
+                className="w-full min-h-[42px] px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full min-h-[42px] inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60"
+              >
+                <MailCheck className="h-4 w-4" />
+                <span>{otpSent ? 'Gửi lại mã OTP' : 'Gửi mã OTP về Gmail'}</span>
+              </button>
+            </form>
+
+            {otpSent && (
+              <form onSubmit={handleVerifyOtp} className="space-y-2.5 pt-1">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  required
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value)}
+                  placeholder="Nhập mã OTP (VD: 123456)"
+                  className="w-full min-h-[42px] px-3 py-2 text-sm font-mono tracking-widest border border-slate-300 rounded-lg"
+                />
+                <button
+                  type="submit"
+                  disabled={loading || !otpCode.trim()}
+                  className="w-full min-h-[42px] inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 disabled:opacity-60"
+                >
+                  <span>Xác nhận &amp; Đăng nhập</span>
+                </button>
+              </form>
+            )}
+          </div>
+        )}
+
+        {supabaseAvailable && authPanel === 'password' && (
           <form onSubmit={handlePasswordSubmit} className="text-left space-y-3 pt-2 border-t border-slate-100">
             {isSignUp && (
               <input

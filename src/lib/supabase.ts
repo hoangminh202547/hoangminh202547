@@ -51,15 +51,39 @@ let cachedClient: SupabaseClient | null = null;
 
 export const SUPABASE_OAUTH_CHANNEL = 'scanshift_supabase_oauth';
 
+export function cleanConfigValue(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .trim();
+}
+
 export function normalizeSupabaseUrl(raw: string): string {
-  return raw.trim().replace(/\/+$/, '');
+  return cleanConfigValue(raw).replace(/\/+$/, '');
 }
 
 export function getEnvSupabaseConfig(): SupabaseConfig {
   const url = (import.meta.env.VITE_SUPABASE_URL as string | undefined) || '';
   const anonKey =
     (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) || '';
-  return { url: normalizeSupabaseUrl(url), anonKey: anonKey.trim() };
+  return { url: normalizeSupabaseUrl(url), anonKey: cleanConfigValue(anonKey) };
+}
+
+export async function fetchRuntimeSupabaseConfig(): Promise<SupabaseConfig | null> {
+  try {
+    const res = await fetch('/api/public-config', {
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { url?: string; anonKey?: string };
+    const cfg: SupabaseConfig = {
+      url: normalizeSupabaseUrl(json.url || ''),
+      anonKey: cleanConfigValue(json.anonKey || ''),
+    };
+    return isValidSupabaseConfig(cfg) ? cfg : null;
+  } catch {
+    return null;
+  }
 }
 
 export function getSupabaseUrlError(rawUrl: string): string | null {
@@ -168,7 +192,15 @@ export function formatSupabaseAuthError(err: unknown): string {
     return 'Không kết nối được tới máy chủ Supabase. Kiểm tra lại Project URL hoặc kết nối mạng.';
   }
   if (lower.includes('code verifier')) {
-    return 'Phiên xác thực PKCE bị gián đoạn giữa các cửa sổ. Vui lòng thử lại trong tab trình duyệt riêng hoặc dùng Mã OTP Email.';
+    return 'Phiên xác thực PKCE bị gián đoạn giữa các cửa sổ. Vui lòng thử lại hoặc dùng Mã OTP Email.';
+  }
+  if (lower.includes('unauthorized-domain')) {
+    const host = typeof window !== 'undefined' ? window.location.host : 'domain Vercel';
+    return `Tên miền "${host}" chưa được thêm vào Authorized Domains trong Firebase Console -> Authentication -> Settings. Hãy thêm "${host}" hoặc dùng đăng nhập Email/OTP Supabase.`;
+  }
+  if (lower.includes('redirect_uri_mismatch') || lower.includes('redirect url')) {
+    const cb = typeof window !== 'undefined' ? `${window.location.origin}/auth/callback` : '/auth/callback';
+    return `Redirect URL chưa khớp. Hãy thêm "${cb}" vào Supabase Dashboard -> Authentication -> URL Configuration -> Redirect URLs.`;
   }
   return raw;
 }
@@ -316,19 +348,24 @@ export async function handleSupabaseOAuthRedirectIfPresent(
     }
   }
 
-  // 3) Direct top-level callback (e.g. mobile browser tab or standalone tab)
+  // 3) Direct top-level callback (e.g. mobile browser tab or standalone tab on Vercel)
+  let exchangedOk = false;
   if (client) {
     try {
       if (accessToken && refreshToken) {
-        await client.auth.setSession({
+        const { error: setErr } = await client.auth.setSession({
           access_token: accessToken,
           refresh_token: refreshToken,
         });
+        exchangedOk = !setErr;
       } else if (code) {
-        await client.auth.exchangeCodeForSession(code);
+        const { error: exErr } = await client.auth.exchangeCodeForSession(code);
+        exchangedOk = !exErr;
       }
-      const cleanUrl = `${window.location.origin}${window.location.pathname === '/auth/callback' ? '/' : window.location.pathname}`;
-      window.history.replaceState({}, document.title, cleanUrl);
+      if (exchangedOk) {
+        const cleanUrl = `${window.location.origin}${window.location.pathname === '/auth/callback' ? '/' : window.location.pathname}`;
+        window.history.replaceState({}, document.title, cleanUrl);
+      }
     } catch {
       // Ignore exchange failure if verifier belonged to opener window
     }
@@ -338,7 +375,7 @@ export async function handleSupabaseOAuthRedirectIfPresent(
   return {
     detected: true,
     relayed: false,
-    missingOpener: isCallbackRoute && !window.opener,
+    missingOpener: !exchangedOk && isCallbackRoute && !window.opener,
     error: errorDesc || undefined,
   };
 }
@@ -789,19 +826,24 @@ export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
       }
     }
 
+    const { data: sessData } = await client.auth.getSession();
+    const hasSession = Boolean(sessData?.session);
+
     if (storageRes.error) {
       const sMsg = storageRes.error.message || '';
       if (sMsg.toLowerCase().includes('not found') || sMsg.toLowerCase().includes('bucket')) {
         details.push({
           name: 'Storage (internal-media)',
-          ok: false,
-          status: 'Chưa tạo bucket internal-media (cần chạy 002_full_erp.sql)',
+          ok: !hasSession,
+          status: hasSession
+            ? 'Chưa tạo bucket internal-media (cần chạy 002_full_erp.sql)'
+            : 'Bucket private (cần đăng nhập Supabase Auth để xác minh)',
         });
       } else {
         details.push({
           name: 'Storage (internal-media)',
           ok: true,
-          status: 'Bucket có bảo vệ RLS (cần phiên Auth để liệt kê)',
+          status: 'Bucket có bảo vệ RLS',
         });
       }
     } else {

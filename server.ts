@@ -19,6 +19,13 @@ interface UsageCacheEntry {
 const usageCache = new Map<string, UsageCacheEntry>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
+function cleanEnv(val: string | undefined): string {
+  return (val || '')
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .trim();
+}
+
 function extractProjectRef(supabaseUrl: string): string {
   try {
     const u = new URL(supabaseUrl);
@@ -30,7 +37,7 @@ function extractProjectRef(supabaseUrl: string): string {
 }
 
 function normalizeUrl(raw: string): string {
-  return raw.trim().replace(/\/+$/, '');
+  return cleanEnv(raw).replace(/\/+$/, '');
 }
 
 async function verifyCallerAuthorization(
@@ -107,15 +114,46 @@ async function startServer() {
     res.json({ ok: true, timestamp: new Date().toISOString() });
   });
 
+  app.get('/api/public-config', (_req: Request, res: Response) => {
+    const url = cleanEnv(
+      process.env.VITE_SUPABASE_URL ||
+        process.env.SUPABASE_URL ||
+        process.env.NEXT_PUBLIC_SUPABASE_URL
+    ).replace(/\/+$/, '');
+    const anonKey = cleanEnv(
+      process.env.VITE_SUPABASE_ANON_KEY ||
+        process.env.SUPABASE_ANON_KEY ||
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    );
+    res.setHeader('Cache-Control', 'no-store, max-age=0');
+    res.json({
+      url,
+      anonKey,
+      configured: Boolean(url && anonKey),
+    });
+  });
+
   app.get('/api/supabase-usage', async (req: Request, res: Response) => {
     const authHeader = String(req.headers.authorization || '');
     const jwt = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
     const supabaseUrl = normalizeUrl(
-      String(req.headers['x-supabase-url'] || process.env.VITE_SUPABASE_URL || '')
+      String(
+        req.headers['x-supabase-url'] ||
+          process.env.VITE_SUPABASE_URL ||
+          process.env.SUPABASE_URL ||
+          process.env.NEXT_PUBLIC_SUPABASE_URL ||
+          ''
+      )
     );
-    const anonKey = String(
-      req.headers['x-supabase-anon-key'] || process.env.VITE_SUPABASE_ANON_KEY || ''
-    ).trim();
+    const anonKey = cleanEnv(
+      String(
+        req.headers['x-supabase-anon-key'] ||
+          process.env.VITE_SUPABASE_ANON_KEY ||
+          process.env.SUPABASE_ANON_KEY ||
+          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+          ''
+      )
+    );
 
     if (!jwt || !supabaseUrl || !anonKey) {
       res.status(401).json({
