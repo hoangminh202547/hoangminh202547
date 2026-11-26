@@ -1,38 +1,107 @@
 import { useEffect, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import {
+  AlertTriangle,
   CheckCircle2,
   Copy,
   Database,
   ExternalLink,
+  Eye,
+  EyeOff,
   KeyRound,
   LogIn,
   MailCheck,
   RefreshCw,
+  RotateCcw,
   Save,
+  ShieldCheck,
   UploadCloud,
   XCircle,
 } from 'lucide-react';
 import {
   SUPABASE_MIGRATION_002_SQL,
   SUPABASE_SCHEMA_SQL,
+  extractSupabaseProjectRef,
   fetchSupabaseAuthSettings,
   formatSupabaseAuthError,
+  getOAuthCallbackUrl,
   getSupabaseClient,
+  getSupabaseKeyError,
+  getSupabaseProviderCallbackUrl,
   getSupabaseUrlError,
+  inspectSupabaseKey,
   isInsideIframe,
   isValidSupabaseConfig,
+  maskSupabaseKey,
   normalizeSupabaseUrl,
   signInWithSupabaseGooglePopup,
   testSupabaseConnection,
+  validateSupabaseConfig,
   type SupabaseAuthSettings,
-  type SupabaseDiagnosticItem,
+  type SupabaseConnectionTestResult,
 } from '../lib/supabase';
-import type { DataBackendMode, SupabaseConfig, SyncState } from '../types';
+import type {
+  DataBackendMode,
+  SupabaseConfig,
+  SupabaseConfigSource,
+  SupabaseOverallStatus,
+  SupabaseRuntimeEnv,
+  SupabaseSubsystemStatus,
+  SyncState,
+} from '../types';
+import { ConfirmDialog } from './ConfirmDialog';
 import { SyncStatusBadge } from './SyncStatusBadge';
+
+const CONFIG_SOURCE_LABELS: Record<SupabaseConfigSource, string> = {
+  env_build: 'Biến môi trường Build (VITE_SUPABASE_*)',
+  env_runtime: 'Biến môi trường Runtime (/api/public-config)',
+  firestore_user: 'Hồ sơ Firestore',
+  manual: 'Cấu hình thủ công trong ứng dụng',
+  none: 'Chưa cấu hình',
+};
+
+const RUNTIME_ENV_LABELS: Record<SupabaseRuntimeEnv, string> = {
+  vercel_production: 'Vercel Production',
+  vercel_preview: 'Vercel Preview',
+  ai_studio: 'Google AI Studio',
+  local: 'Local Development',
+};
+
+const OVERALL_STATUS_LABELS: Record<
+  SupabaseOverallStatus,
+  { label: string; tone: string }
+> = {
+  not_configured: { label: 'Chưa cấu hình', tone: 'bg-slate-100 text-slate-700' },
+  invalid_config: { label: 'Cấu hình không hợp lệ', tone: 'bg-red-100 text-red-800' },
+  configured_untested: { label: 'Đã cấu hình (chưa kiểm tra)', tone: 'bg-blue-100 text-blue-800' },
+  checking: { label: 'Đang kiểm tra kết nối', tone: 'bg-amber-100 text-amber-800' },
+  connected_full: { label: 'Kết nối hoàn chỉnh', tone: 'bg-emerald-100 text-emerald-800' },
+  connected_db_rls: { label: 'Kết nối Database thành công', tone: 'bg-emerald-100 text-emerald-800' },
+  auth_error: { label: 'Lỗi Authentication', tone: 'bg-red-100 text-red-800' },
+  permission_rls_error: { label: 'Lỗi quyền truy cập / RLS', tone: 'bg-amber-100 text-amber-800' },
+  schema_error: { label: 'Lỗi cấu trúc bảng', tone: 'bg-amber-100 text-amber-800' },
+  realtime_error: { label: 'Lỗi Realtime', tone: 'bg-amber-100 text-amber-800' },
+  network_error: { label: 'Kết nối thất bại', tone: 'bg-red-100 text-red-800' },
+};
+
+const SUBSYSTEM_LABEL: Record<
+  SupabaseSubsystemStatus,
+  { text: string; color: string }
+> = {
+  idle: { text: 'Chưa kiểm tra', color: 'text-slate-500' },
+  ok: { text: 'Hoạt động', color: 'text-emerald-700 font-medium' },
+  rls_protected: { text: 'Bảo vệ RLS (chờ Auth)', color: 'text-blue-700 font-medium' },
+  warning: { text: 'Cần lưu ý', color: 'text-amber-700 font-medium' },
+  error: { text: 'Lỗi', color: 'text-red-600 font-medium' },
+};
 
 interface SupabasePanelProps {
   config: SupabaseConfig;
+  configSource: SupabaseConfigSource;
+  runtimeEnv: SupabaseRuntimeEnv;
+  envBaselineConfig: SupabaseConfig | null;
+  envValidationError: string | null;
+  configConflictWarning: string | null;
   backendMode: DataBackendMode;
   syncState: SyncState;
   lastSyncedAt: string | null;
@@ -41,6 +110,7 @@ interface SupabasePanelProps {
   currentUserEmail: string;
   supabaseEmail: string | null;
   onSaveConfig: (config: SupabaseConfig) => Promise<void>;
+  onRestoreEnvConfig: () => Promise<void>;
   onForceResync: () => Promise<void>;
   onMigrateFromFirebase: () => Promise<void>;
   onSupabaseSignedIn?: (session?: Session | null) => void;
@@ -49,6 +119,11 @@ interface SupabasePanelProps {
 
 export function SupabasePanel({
   config,
+  configSource,
+  runtimeEnv,
+  envBaselineConfig,
+  envValidationError,
+  configConflictWarning,
   backendMode,
   syncState,
   lastSyncedAt,
@@ -57,6 +132,7 @@ export function SupabasePanel({
   currentUserEmail,
   supabaseEmail,
   onSaveConfig,
+  onRestoreEnvConfig,
   onForceResync,
   onMigrateFromFirebase,
   onSupabaseSignedIn,
@@ -64,13 +140,13 @@ export function SupabasePanel({
 }: SupabasePanelProps) {
   const [url, setUrl] = useState(config.url);
   const [anonKey, setAnonKey] = useState(config.anonKey);
+  const [showKeyInput, setShowKeyInput] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{
-    ok: boolean;
-    message: string;
-    details?: SupabaseDiagnosticItem[];
-  } | null>(null);
+  const [testResult, setTestResult] =
+    useState<SupabaseConnectionTestResult | null>(null);
+  const [pendingProjectSwitch, setPendingProjectSwitch] =
+    useState<SupabaseConfig | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
   const [showSql, setShowSql] = useState(false);
   const [sqlTab, setSqlTab] = useState<'migration' | 'base'>('migration');
@@ -108,12 +184,41 @@ export function SupabasePanel({
     anonKey: anonKey.trim(),
   };
   const urlValidationError = url.trim() ? getSupabaseUrlError(url) : null;
-  const configReady = isValidSupabaseConfig(currentConfig);
+  const keyValidationError = anonKey.trim()
+    ? getSupabaseKeyError(anonKey, url)
+    : null;
+  const draftValidation = validateSupabaseConfig(currentConfig);
+  const activeValidation = validateSupabaseConfig(config);
+  const activeKeyInfo = inspectSupabaseKey(config.anonKey);
+  const configReady = draftValidation.valid;
   const inIframe = isInsideIframe();
-  const callbackUrl =
-    typeof window !== 'undefined'
-      ? `${window.location.origin}/auth/callback`
-      : '';
+  const callbackUrl = getOAuthCallbackUrl();
+  const providerCallbackUrl = getSupabaseProviderCallbackUrl(
+    currentConfig.url || config.url
+  );
+
+  const envRef = envBaselineConfig
+    ? extractSupabaseProjectRef(envBaselineConfig.url)
+    : '';
+  const activeRef = extractSupabaseProjectRef(config.url);
+  const canRestoreEnv = Boolean(
+    envBaselineConfig &&
+      (configSource === 'manual' ||
+        configSource === 'firestore_user' ||
+        (envRef && activeRef !== envRef) ||
+        configConflictWarning)
+  );
+
+  const derivedOverallStatus: SupabaseOverallStatus = testing
+    ? 'checking'
+    : testResult
+      ? testResult.overallStatus
+      : !config.url && !config.anonKey
+        ? 'not_configured'
+        : !activeValidation.valid
+          ? 'invalid_config'
+          : 'configured_untested';
+  const statusBadgeMeta = OVERALL_STATUS_LABELS[derivedOverallStatus];
 
   // Probe Supabase Auth provider settings when config becomes ready
   useEffect(() => {
@@ -131,30 +236,40 @@ export function SupabasePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentConfig.url, currentConfig.anonKey, configReady, backendMode]);
 
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (urlValidationError) {
-      setTestResult({ ok: false, message: urlValidationError });
-      return;
-    }
+  const commitSaveConfig = async (targetConfig: SupabaseConfig) => {
     setSaving(true);
     try {
-      await onSaveConfig(currentConfig);
-      const settings = await fetchSupabaseAuthSettings(currentConfig);
+      await onSaveConfig(targetConfig);
+      const diag = await testSupabaseConnection(targetConfig);
+      setTestResult(diag);
+      const settings = await fetchSupabaseAuthSettings(targetConfig);
       setAuthSettings(settings);
-      setTestResult({
-        ok: true,
-        message: 'Đã lưu thông tin kết nối Supabase.',
-      });
     } catch (err) {
-      setTestResult({
-        ok: false,
-        message:
-          err instanceof Error ? err.message : 'Không thể lưu cấu hình.',
-      });
+      const msg =
+        err instanceof Error ? err.message : 'Không thể lưu cấu hình.';
+      onNotify?.('error', msg);
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const check = validateSupabaseConfig(currentConfig);
+    if (!check.valid) {
+      const msg =
+        check.urlError || check.keyError || 'Cấu hình Supabase không hợp lệ.';
+      onNotify?.('error', msg);
+      return;
+    }
+
+    const prevRef = extractSupabaseProjectRef(config.url);
+    if (prevRef && check.projectRef && prevRef !== check.projectRef) {
+      setPendingProjectSwitch(check.normalized);
+      return;
+    }
+
+    await commitSaveConfig(check.normalized);
   };
 
   const handleTest = async () => {
@@ -162,15 +277,19 @@ export function SupabasePanel({
     setTestResult(null);
     const res = await testSupabaseConnection(currentConfig);
     setTestResult(res);
-    const settings = await fetchSupabaseAuthSettings(currentConfig);
-    setAuthSettings(settings);
+    if (res.ok) {
+      const settings = await fetchSupabaseAuthSettings(currentConfig);
+      setAuthSettings(settings);
+    }
     setTesting(false);
   };
 
   const ensureConfigSavedAndClient = async () => {
     if (!configReady) {
       throw new Error(
-        urlValidationError || 'Vui lòng nhập Project URL và Anon Key hợp lệ trước.'
+        urlValidationError ||
+          keyValidationError ||
+          'Vui lòng nhập Project URL và Public Key hợp lệ trước.'
       );
     }
     if (
@@ -379,6 +498,130 @@ export function SupabasePanel({
           />
         </div>
 
+        {/* Real Config & Diagnostics Overview */}
+        <div className="mt-4 p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-700 uppercase tracking-wider">
+              <ShieldCheck className="h-4 w-4 text-blue-600" />
+              <span>Thông tin kết nối &amp; Môi trường thực tế</span>
+            </div>
+            <span
+              className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${statusBadgeMeta.tone}`}
+            >
+              {statusBadgeMeta.label}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 text-xs">
+            <div className="bg-white border border-slate-200 rounded-lg px-3 py-2">
+              <p className="text-slate-500">Môi trường chạy</p>
+              <p className="font-semibold text-slate-900 mt-0.5">
+                {RUNTIME_ENV_LABELS[runtimeEnv]}
+              </p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-lg px-3 py-2">
+              <p className="text-slate-500">Nguồn cấu hình ưu tiên</p>
+              <p className="font-semibold text-slate-900 mt-0.5 truncate" title={CONFIG_SOURCE_LABELS[configSource]}>
+                {CONFIG_SOURCE_LABELS[configSource]}
+              </p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-lg px-3 py-2">
+              <p className="text-slate-500">Project Reference</p>
+              <p className="font-mono font-semibold text-slate-900 mt-0.5">
+                {activeRef || 'Chưa xác định'}
+              </p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-lg px-3 py-2">
+              <p className="text-slate-500">Public Key (đã che)</p>
+              <p className="font-mono font-semibold text-slate-900 mt-0.5">
+                {maskSupabaseKey(config.anonKey)}
+              </p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-lg px-3 py-2">
+              <p className="text-slate-500">Loại Key phát hiện</p>
+              <p className="font-semibold text-slate-900 mt-0.5">
+                {activeKeyInfo.keyType === 'publishable'
+                  ? 'Publishable Key (sb_publishable)'
+                  : activeKeyInfo.keyType === 'anon_jwt'
+                    ? 'Legacy Anon JWT'
+                    : 'Chưa hợp lệ / Thiếu'}
+              </p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-lg px-3 py-2">
+              <p className="text-slate-500">Kiểm tra gần nhất</p>
+              <p className="font-medium text-slate-900 mt-0.5">
+                {testResult?.checkedAt
+                  ? new Date(testResult.checkedAt).toLocaleString('vi-VN')
+                  : 'Chưa chạy kiểm tra'}
+              </p>
+            </div>
+          </div>
+
+          {testResult && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs pt-1">
+              <div className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 flex items-center justify-between">
+                <span className="text-slate-600">Auth</span>
+                <span className={SUBSYSTEM_LABEL[testResult.authStatus].color}>
+                  {SUBSYSTEM_LABEL[testResult.authStatus].text}
+                </span>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 flex items-center justify-between">
+                <span className="text-slate-600">Database</span>
+                <span className={SUBSYSTEM_LABEL[testResult.dbStatus].color}>
+                  {SUBSYSTEM_LABEL[testResult.dbStatus].text}
+                </span>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 flex items-center justify-between">
+                <span className="text-slate-600">Realtime</span>
+                <span className={SUBSYSTEM_LABEL[testResult.realtimeStatus].color}>
+                  {SUBSYSTEM_LABEL[testResult.realtimeStatus].text}
+                </span>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 flex items-center justify-between">
+                <span className="text-slate-600">Storage</span>
+                <span className={SUBSYSTEM_LABEL[testResult.storageStatus].color}>
+                  {SUBSYSTEM_LABEL[testResult.storageStatus].text}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {envValidationError && (
+          <div
+            role="alert"
+            className="mt-4 p-3.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800 flex items-start gap-2.5"
+          >
+            <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Lỗi biến môi trường Supabase:</p>
+              <p className="mt-0.5">{envValidationError}</p>
+            </div>
+          </div>
+        )}
+
+        {configConflictWarning && (
+          <div
+            role="status"
+            className="mt-4 p-3.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5"
+          >
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+              <span>{configConflictWarning}</span>
+            </div>
+            {canRestoreEnv && (
+              <button
+                type="button"
+                onClick={() => void onRestoreEnvConfig()}
+                className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-900 bg-white border border-amber-300 rounded-lg hover:bg-amber-100 whitespace-nowrap shrink-0"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>Đồng bộ theo biến môi trường</span>
+              </button>
+            )}
+          </div>
+        )}
+
         <form onSubmit={handleSave} className="mt-5 space-y-4">
           <div>
             <label
@@ -389,40 +632,91 @@ export function SupabasePanel({
             </label>
             <input
               id="supabase-url"
-              type="url"
+              type="text"
+              inputMode="url"
+              autoComplete="off"
+              spellCheck={false}
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://your-project-ref.supabase.co"
-              className="w-full min-h-[44px] px-3.5 py-2.5 text-sm font-mono bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
+              className={`w-full min-h-[44px] px-3.5 py-2.5 text-sm font-mono bg-white border rounded-lg focus:outline-none focus:ring-2 ${
+                urlValidationError
+                  ? 'border-red-400 focus:ring-red-500 focus:border-red-500'
+                  : 'border-slate-300 focus:ring-blue-600 focus:border-blue-600'
+              }`}
             />
             {urlValidationError && (
-              <p className="mt-1.5 text-xs text-red-600">{urlValidationError}</p>
+              <p className="mt-1.5 text-xs text-red-600 font-medium">
+                {urlValidationError}
+              </p>
             )}
           </div>
 
           <div>
-            <label
-              htmlFor="supabase-anon-key"
-              className="block text-sm font-medium text-slate-700 mb-1.5"
-            >
-              Supabase Anon / Public Key
-            </label>
-            <input
-              id="supabase-anon-key"
-              type="password"
-              value={anonKey}
-              onChange={(e) => setAnonKey(e.target.value)}
-              placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-              className="w-full min-h-[44px] px-3.5 py-2.5 text-sm font-mono bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
-            />
+            <div className="flex items-center justify-between mb-1.5">
+              <label
+                htmlFor="supabase-anon-key"
+                className="block text-sm font-medium text-slate-700"
+              >
+                Supabase Public / Anon Key
+              </label>
+              <span className="text-[11px] text-slate-500">
+                Chỉ dùng Publishable Key hoặc Anon Key (tuyệt đối không nhập Secret Key)
+              </span>
+            </div>
+            <div className="relative">
+              <input
+                id="supabase-anon-key"
+                type={showKeyInput ? 'text' : 'password'}
+                autoComplete="off"
+                spellCheck={false}
+                value={anonKey}
+                onChange={(e) => setAnonKey(e.target.value)}
+                placeholder="sb_publishable_... hoặc eyJhbGciOiJIUzI1NiIs..."
+                className={`w-full min-h-[44px] pl-3.5 pr-11 py-2.5 text-sm font-mono bg-white border rounded-lg focus:outline-none focus:ring-2 ${
+                  keyValidationError
+                    ? 'border-red-400 focus:ring-red-500 focus:border-red-500'
+                    : 'border-slate-300 focus:ring-blue-600 focus:border-blue-600'
+                }`}
+              />
+              <button
+                type="button"
+                onClick={() => setShowKeyInput((v) => !v)}
+                aria-label={showKeyInput ? 'Ẩn khóa công khai' : 'Hiện khóa công khai'}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-700 rounded-md"
+              >
+                {showKeyInput ? (
+                  <EyeOff className="h-4 w-4" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
+              </button>
+            </div>
+            {keyValidationError && (
+              <p className="mt-1.5 text-xs text-red-600 font-medium">
+                {keyValidationError}
+              </p>
+            )}
           </div>
 
           {callbackUrl && (
-            <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-1">
-              <p className="font-medium text-slate-800">
-                Redirect URL cho Supabase Auth (Google OAuth):
-              </p>
-              <p className="font-mono text-slate-900 break-all">{callbackUrl}</p>
+            <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-1.5">
+              <div>
+                <p className="font-medium text-slate-800">
+                  1. Redirect URL ứng dụng (khai báo trong Supabase &rarr; URL Configuration):
+                </p>
+                <p className="font-mono text-slate-900 break-all">{callbackUrl}</p>
+              </div>
+              {providerCallbackUrl && (
+                <div>
+                  <p className="font-medium text-slate-800">
+                    2. Callback URL cho Google Cloud Console (Authorized redirect URIs):
+                  </p>
+                  <p className="font-mono text-slate-900 break-all">
+                    {providerCallbackUrl}
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
@@ -441,7 +735,14 @@ export function SupabasePanel({
                 ) : (
                   <XCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
                 )}
-                <span className="font-medium">{testResult.message}</span>
+                <div className="min-w-0">
+                  <span className="font-medium block">{testResult.message}</span>
+                  {testResult.lastError && !testResult.ok && (
+                    <span className="text-xs text-red-700 block mt-0.5">
+                      Chi tiết lỗi: {testResult.lastError}
+                    </span>
+                  )}
+                </div>
               </div>
 
               {testResult.details && testResult.details.length > 0 && (
@@ -471,7 +772,7 @@ export function SupabasePanel({
           <div className="flex flex-wrap items-center gap-3 pt-1">
             <button
               type="submit"
-              disabled={saving}
+              disabled={saving || Boolean(urlValidationError || keyValidationError)}
               className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors whitespace-nowrap"
             >
               <Save className="h-4 w-4" />
@@ -489,6 +790,17 @@ export function SupabasePanel({
                 {testing ? 'Đang kiểm tra...' : 'Kiểm tra kết nối & bảng'}
               </span>
             </button>
+
+            {canRestoreEnv && (
+              <button
+                type="button"
+                onClick={() => void onRestoreEnvConfig()}
+                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap"
+              >
+                <RotateCcw className="h-4 w-4" />
+                <span>Khôi phục theo Biến môi trường</span>
+              </button>
+            )}
 
             {backendMode === 'supabase' && (
               <button
@@ -961,6 +1273,27 @@ export function SupabasePanel({
           </pre>
         )}
       </div>
+
+      <ConfirmDialog
+        open={Boolean(pendingProjectSwitch)}
+        title="Xác nhận thay đổi Supabase Project"
+        description="Bạn đang thay đổi Supabase Project. Việc này có thể khiến ứng dụng truy cập nguồn dữ liệu khác. Hãy xác minh dự án trước khi xác nhận."
+        confirmLabel="Xác nhận chuyển Project"
+        cancelLabel="Hủy thay đổi"
+        variant="danger"
+        onConfirm={() => {
+          const target = pendingProjectSwitch;
+          setPendingProjectSwitch(null);
+          if (target) {
+            void commitSaveConfig(target);
+          }
+        }}
+        onCancel={() => {
+          setPendingProjectSwitch(null);
+          setUrl(config.url);
+          setAnonKey(config.anonKey);
+        }}
+      />
     </div>
   );
 }

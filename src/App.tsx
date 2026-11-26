@@ -87,19 +87,23 @@ import {
   deleteBarcodeScansInSupabase,
   deleteUserAccessInSupabase,
   deleteWorkScheduleInSupabase,
+  detectClientRuntimeEnv,
+  extractSupabaseProjectRef,
   fetchAllSyncedData,
   fetchMyAccessFromSupabase,
   fetchRuntimeSupabaseConfig,
-  getEnvSupabaseConfig,
   getSupabaseClient,
+  getValidatedEnvSupabaseConfig,
   handleSupabaseOAuthRedirectIfPresent,
   isValidSupabaseConfig,
   pushBarcodeScansToSupabase,
   pushSchedulesToSupabase,
+  resetCachedSupabaseClient,
   saveUserAccessInSupabase,
   updateBarcodeScanWithVersion,
   updateWorkScheduleWithVersion,
   upsertUserProfile,
+  validateSupabaseConfig,
   type RealtimeSubscriptionHandle,
 } from './lib/supabase';
 import {
@@ -124,6 +128,8 @@ import type {
   ShiftDefinition,
   ShiftType,
   SupabaseConfig,
+  SupabaseConfigSource,
+  SupabaseRuntimeEnv,
   SyncState,
   ToastMessage,
   UiPreferences,
@@ -454,9 +460,36 @@ function ModuleSuspenseFallback() {
 }
 
 function MainApp() {
+  const initialBuildEnv = useMemo(() => getValidatedEnvSupabaseConfig(), []);
   const [supabaseConfig, setSupabaseConfig] = useState<SupabaseConfig>(() =>
-    getEnvSupabaseConfig()
+    initialBuildEnv.valid ? initialBuildEnv.config : { url: '', anonKey: '' }
   );
+  const [supabaseConfigSource, setSupabaseConfigSource] =
+    useState<SupabaseConfigSource>(() =>
+      initialBuildEnv.valid ? 'env_build' : 'none'
+    );
+  const [runtimeEnv, setRuntimeEnv] = useState<SupabaseRuntimeEnv>(() =>
+    detectClientRuntimeEnv()
+  );
+  const [envValidationError, setEnvValidationError] = useState<string | null>(
+    () => (initialBuildEnv.valid ? null : initialBuildEnv.error)
+  );
+  const [configConflictWarning, setConfigConflictWarning] = useState<string | null>(
+    null
+  );
+  const envBaselineRef = useRef<{
+    config: SupabaseConfig;
+    source: 'env_build' | 'env_runtime';
+  } | null>(
+    initialBuildEnv.valid
+      ? { config: initialBuildEnv.config, source: 'env_build' }
+      : null
+  );
+  const [envBaselineConfig, setEnvBaselineConfig] =
+    useState<SupabaseConfig | null>(() =>
+      initialBuildEnv.valid ? initialBuildEnv.config : null
+    );
+
   const supabaseReady = useMemo(
     () => isValidSupabaseConfig(supabaseConfig),
     [supabaseConfig]
@@ -508,9 +541,7 @@ function MainApp() {
     return null;
   }, [supabaseSession, firebaseUser, customDisplayName]);
 
-  const [runtimeConfigChecked, setRuntimeConfigChecked] = useState(() =>
-    isValidSupabaseConfig(getEnvSupabaseConfig())
-  );
+  const [runtimeConfigChecked, setRuntimeConfigChecked] = useState(false);
 
   const authReady =
     runtimeConfigChecked &&
@@ -628,24 +659,38 @@ function MainApp() {
   // Auth Initialization (Supabase Auth + Firebase Auth + Vercel Runtime Config)
   // ============================================================================
   useEffect(() => {
-    if (isValidSupabaseConfig(getEnvSupabaseConfig())) {
-      setRuntimeConfigChecked(true);
-      return;
-    }
     let mounted = true;
-    void fetchRuntimeSupabaseConfig().then((cfg) => {
+    void fetchRuntimeSupabaseConfig().then((res) => {
       if (!mounted) return;
-      if (cfg) {
-        setSupabaseConfig((prev) =>
-          isValidSupabaseConfig(prev) ? prev : cfg
-        );
+      if (res.runtimeEnv) {
+        setRuntimeEnv(res.runtimeEnv);
+      }
+      if (!initialBuildEnv.valid) {
+        if (res.valid && res.config) {
+          envBaselineRef.current = { config: res.config, source: 'env_runtime' };
+          setEnvBaselineConfig(res.config);
+          setSupabaseConfig(res.config);
+          setSupabaseConfigSource('env_runtime');
+          setEnvValidationError(null);
+        } else if (res.envError) {
+          setEnvValidationError(res.envError);
+        }
+      } else if (res.valid && res.config) {
+        // Warn if runtime server env differs from build-time env
+        const buildRef = extractSupabaseProjectRef(initialBuildEnv.config.url);
+        const rtRef = extractSupabaseProjectRef(res.config.url);
+        if (buildRef && rtRef && buildRef !== rtRef) {
+          setConfigConflictWarning(
+            `Biến môi trường build (${buildRef}) khác với biến môi trường runtime (${rtRef}). Đang ưu tiên biến môi trường build.`
+          );
+        }
       }
       setRuntimeConfigChecked(true);
     });
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [initialBuildEnv]);
 
   useEffect(() => {
     if (!runtimeConfigChecked || supabaseReady) return;
@@ -721,10 +766,10 @@ function MainApp() {
             if (fbUser.photoURL) {
               payload.photoURL = fbUser.photoURL.slice(0, 500);
             }
-            const envCfg = getEnvSupabaseConfig();
-            if (envCfg.url) payload.supabaseUrl = envCfg.url.slice(0, 300);
-            if (envCfg.anonKey) {
-              payload.supabaseAnonKey = envCfg.anonKey.slice(0, 500);
+            const baseline = envBaselineRef.current?.config;
+            if (baseline && isValidSupabaseConfig(baseline)) {
+              payload.supabaseUrl = baseline.url.slice(0, 300);
+              payload.supabaseAnonKey = baseline.anonKey.slice(0, 500);
             }
             await setDoc(userRef, payload);
           }
@@ -738,34 +783,69 @@ function MainApp() {
   }, [reportFirestoreError]);
 
   useEffect(() => {
-    if (!firebaseUser) return;
+    if (!firebaseUser || !runtimeConfigChecked) return;
     const path = `users/${firebaseUser.uid}`;
     const unsub = onSnapshot(
       doc(db, 'users', firebaseUser.uid),
       (snap) => {
-        if (snap.exists()) {
-          const data = snap.data();
-          const envCfg = getEnvSupabaseConfig();
-          const fbUrl =
-            typeof data.supabaseUrl === 'string' ? data.supabaseUrl : '';
-          const fbKey =
-            typeof data.supabaseAnonKey === 'string'
-              ? data.supabaseAnonKey
-              : '';
-          setSupabaseConfig((prev) => {
-            const nextUrl = envCfg.url || prev.url || fbUrl;
-            const nextAnonKey = envCfg.anonKey || prev.anonKey || fbKey;
-            if (prev.url === nextUrl && prev.anonKey === nextAnonKey) {
-              return prev;
-            }
-            return { url: nextUrl, anonKey: nextAnonKey };
-          });
+        if (!snap.exists()) return;
+        const data = snap.data();
+        const fbUrl =
+          typeof data.supabaseUrl === 'string' ? data.supabaseUrl : '';
+        const fbKey =
+          typeof data.supabaseAnonKey === 'string' ? data.supabaseAnonKey : '';
+
+        if (!fbUrl && !fbKey) {
+          setConfigConflictWarning(null);
+          return;
         }
+
+        const fbValidation = validateSupabaseConfig({ url: fbUrl, anonKey: fbKey });
+        const envBaseline = envBaselineRef.current;
+
+        // Rule: Trusted environment config (Vercel / AI Studio) ALWAYS takes precedence over stale/corrupted Firestore data
+        if (envBaseline) {
+          const envRef = extractSupabaseProjectRef(envBaseline.config.url);
+          if (!fbValidation.valid) {
+            setConfigConflictWarning(
+              'Hồ sơ Firestore đang lưu cấu hình Supabase không hợp lệ (có thể bị nhập nhầm URL/Key trước đó). Hệ thống đang ưu tiên biến môi trường chuẩn.'
+            );
+          } else if (fbValidation.projectRef && envRef && fbValidation.projectRef !== envRef) {
+            setConfigConflictWarning(
+              `Hồ sơ Firestore đang lưu Project (${fbValidation.projectRef}) khác với biến môi trường (${envRef}). Hệ thống đang ưu tiên biến môi trường.`
+            );
+          } else {
+            setConfigConflictWarning(null);
+          }
+          return;
+        }
+
+        // No environment config -> use Firestore ONLY if strictly valid
+        if (!fbValidation.valid) {
+          setConfigConflictWarning(
+            fbValidation.urlError ||
+              fbValidation.keyError ||
+              'Cấu hình Supabase lưu trong Firestore không hợp lệ và đã bị bỏ qua.'
+          );
+          return;
+        }
+
+        setConfigConflictWarning(null);
+        setSupabaseConfig((prev) => {
+          if (
+            prev.url === fbValidation.normalized.url &&
+            prev.anonKey === fbValidation.normalized.anonKey
+          ) {
+            return prev;
+          }
+          return fbValidation.normalized;
+        });
+        setSupabaseConfigSource((prev) => (prev === 'manual' ? prev : 'firestore_user'));
       },
       (error) => reportFirestoreError(error, OperationType.GET, path)
     );
     return () => unsub();
-  }, [firebaseUser, reportFirestoreError]);
+  }, [firebaseUser, runtimeConfigChecked, reportFirestoreError]);
 
   useEffect(() => {
     if (!currentUser) {
@@ -2224,17 +2304,42 @@ function MainApp() {
   // ============================================================================
   // Supabase Config & Zero-Data-Loss Migration Handlers
   // ============================================================================
-  const handleSaveSupabaseConfig = useCallback(
-    async (cfg: SupabaseConfig) => {
-      setSupabaseConfig(cfg);
-      if (firebaseUser) {
+  const applyValidatedSupabaseConfig = useCallback(
+    async (
+      normalized: SupabaseConfig,
+      source: SupabaseConfigSource,
+      persistToFirestore: boolean
+    ) => {
+      const prevRef = extractSupabaseProjectRef(supabaseConfig.url);
+      const nextRef = extractSupabaseProjectRef(normalized.url);
+      if (prevRef && nextRef && prevRef !== nextRef) {
+        if (realtimeRef.current) {
+          await realtimeRef.current.unsubscribe();
+          realtimeRef.current = null;
+        }
+        if (supabaseClient && supabaseSession) {
+          await supabaseClient.auth.signOut();
+        }
+        resetCachedSupabaseClient();
+        setSupabaseSession(null);
+        setScans([]);
+        setSchedules([]);
+        setActivityLogs([]);
+        setAuthorizedMembers([]);
+      }
+
+      setSupabaseConfig(normalized);
+      setSupabaseConfigSource(source);
+      setConfigConflictWarning(null);
+
+      if (persistToFirestore && firebaseUser) {
         const userRef = doc(db, 'users', firebaseUser.uid);
         try {
           const snap = await getDoc(userRef);
           if (snap.exists()) {
             await updateDoc(userRef, {
-              supabaseUrl: cfg.url.slice(0, 300),
-              supabaseAnonKey: cfg.anonKey.slice(0, 500),
+              supabaseUrl: normalized.url.slice(0, 300),
+              supabaseAnonKey: normalized.anonKey.slice(0, 500),
               updatedAt: serverTimestamp(),
             });
           } else {
@@ -2245,8 +2350,8 @@ function MainApp() {
               uid: firebaseUser.uid,
               email: safeEmail,
               displayName: safeName.slice(0, 120),
-              supabaseUrl: cfg.url.slice(0, 300),
-              supabaseAnonKey: cfg.anonKey.slice(0, 500),
+              supabaseUrl: normalized.url.slice(0, 300),
+              supabaseAnonKey: normalized.anonKey.slice(0, 500),
               updatedAt: serverTimestamp(),
             };
             if (firebaseUser.photoURL) {
@@ -2263,10 +2368,40 @@ function MainApp() {
           );
         }
       }
+    },
+    [
+      supabaseConfig.url,
+      supabaseClient,
+      supabaseSession,
+      firebaseUser,
+      reportFirestoreError,
+    ]
+  );
+
+  const handleSaveSupabaseConfig = useCallback(
+    async (cfg: SupabaseConfig) => {
+      const check = validateSupabaseConfig(cfg);
+      if (!check.valid) {
+        throw new Error(
+          check.urlError || check.keyError || 'Cấu hình Supabase không hợp lệ.'
+        );
+      }
+      await applyValidatedSupabaseConfig(check.normalized, 'manual', true);
       notify('success', 'Đã lưu cấu hình Supabase.');
     },
-    [firebaseUser, notify, reportFirestoreError]
+    [applyValidatedSupabaseConfig, notify]
   );
+
+  const handleRestoreEnvConfig = useCallback(async () => {
+    const baseline = envBaselineRef.current;
+    if (!baseline) {
+      notify('error', 'Không có cấu hình biến môi trường hợp lệ để khôi phục.');
+      return;
+    }
+    await applyValidatedSupabaseConfig(baseline.config, baseline.source, true);
+    setEnvValidationError(null);
+    notify('success', 'Đã đồng bộ cấu hình theo biến môi trường hệ thống.');
+  }, [applyValidatedSupabaseConfig, notify]);
 
   const handleForceResync = useCallback(async () => {
     if (backendMode === 'supabase') {
@@ -3082,6 +3217,11 @@ function MainApp() {
               <div className="space-y-6 max-w-3xl">
                 <SupabasePanel
                   config={supabaseConfig}
+                  configSource={supabaseConfigSource}
+                  runtimeEnv={runtimeEnv}
+                  envBaselineConfig={envBaselineConfig}
+                  envValidationError={envValidationError}
+                  configConflictWarning={configConflictWarning}
                   backendMode={backendMode}
                   syncState={syncState}
                   lastSyncedAt={lastSyncedAt}
@@ -3094,6 +3234,7 @@ function MainApp() {
                   currentUserEmail={currentUser.email}
                   supabaseEmail={supabaseSession?.user?.email || null}
                   onSaveConfig={handleSaveSupabaseConfig}
+                  onRestoreEnvConfig={handleRestoreEnvConfig}
                   onForceResync={handleForceResync}
                   onMigrateFromFirebase={handleMigrateFromFirebase}
                   onSupabaseSignedIn={(session) => {

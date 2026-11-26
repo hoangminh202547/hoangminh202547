@@ -115,21 +115,111 @@ async function startServer() {
   });
 
   app.get('/api/public-config', (_req: Request, res: Response) => {
-    const url = cleanEnv(
+    const rawUrl = cleanEnv(
       process.env.VITE_SUPABASE_URL ||
         process.env.SUPABASE_URL ||
         process.env.NEXT_PUBLIC_SUPABASE_URL
     ).replace(/\/+$/, '');
-    const anonKey = cleanEnv(
+    const rawKey = cleanEnv(
       process.env.VITE_SUPABASE_ANON_KEY ||
+        process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
         process.env.SUPABASE_ANON_KEY ||
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+        process.env.SUPABASE_PUBLISHABLE_KEY ||
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
     );
+
+    let envError: string | null = null;
+    let url = rawUrl;
+    let anonKey = rawKey;
+
+    if (rawUrl || rawKey) {
+      if (
+        /^sb_(publishable|secret)_/i.test(rawUrl) ||
+        /^eyJ[A-Za-z0-9_-]+\./.test(rawUrl)
+      ) {
+        envError =
+          'Biến môi trường VITE_SUPABASE_URL đang chứa API Key thay vì URL dự án (https://<project-ref>.supabase.co).';
+        url = '';
+        anonKey = '';
+      } else {
+        let urlOk = false;
+        try {
+          const parsed = new URL(rawUrl);
+          urlOk =
+            parsed.protocol === 'https:' &&
+            /^[a-z0-9-]{8,40}\.supabase\.co$/i.test(parsed.hostname) &&
+            (parsed.pathname === '/' || parsed.pathname === '') &&
+            !parsed.search &&
+            !parsed.hash;
+        } catch {
+          urlOk = false;
+        }
+        if (!urlOk) {
+          envError =
+            'Biến môi trường VITE_SUPABASE_URL không hợp lệ (phải có dạng https://<project-ref>.supabase.co).';
+          url = '';
+          anonKey = '';
+        } else if (/^https?:\/\//i.test(rawKey)) {
+          envError =
+            'Biến môi trường VITE_SUPABASE_ANON_KEY đang chứa URL thay vì Public Key.';
+          url = '';
+          anonKey = '';
+        } else if (/^sb_secret_/i.test(rawKey)) {
+          envError =
+            'Phát hiện Secret Key trong biến môi trường công khai. Đã chặn truyền ra trình duyệt.';
+          url = '';
+          anonKey = '';
+        } else {
+          const isPublishable = /^sb_publishable_[A-Za-z0-9_-]{12,}$/i.test(rawKey);
+          let isAnonJwt = false;
+          if (/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(rawKey)) {
+            try {
+              const part = rawKey.split('.')[1] || '';
+              const padded = part.replace(/-/g, '+').replace(/_/g, '/');
+              const parsedJwt = JSON.parse(
+                Buffer.from(padded, 'base64').toString('utf8')
+              ) as { role?: string };
+              if (parsedJwt.role === 'service_role') {
+                envError =
+                  'Phát hiện Service Role JWT trong biến môi trường công khai. Đã chặn truyền ra trình duyệt.';
+                url = '';
+                anonKey = '';
+              } else {
+                isAnonJwt = !parsedJwt.role || parsedJwt.role === 'anon';
+              }
+            } catch {
+              isAnonJwt = false;
+            }
+          }
+          if (!envError && !isPublishable && !isAnonJwt) {
+            envError =
+              'Biến môi trường VITE_SUPABASE_ANON_KEY không đúng định dạng Public Key hoặc Anon Key.';
+            url = '';
+            anonKey = '';
+          }
+        }
+      }
+    }
+
+    const vercelEnv = (process.env.VERCEL_ENV || '').trim().toLowerCase();
+    const appUrl = (process.env.APP_URL || '').trim().toLowerCase();
+    const runtimeEnv =
+      vercelEnv === 'production'
+        ? 'vercel_production'
+        : vercelEnv === 'preview' || process.env.VERCEL === '1'
+          ? 'vercel_preview'
+          : appUrl.includes('run.app') || appUrl.includes('aistudio')
+            ? 'ai_studio'
+            : 'local';
+
     res.setHeader('Cache-Control', 'no-store, max-age=0');
     res.json({
       url,
       anonKey,
       configured: Boolean(url && anonKey),
+      envError,
+      runtimeEnv,
     });
   });
 
@@ -149,8 +239,11 @@ async function startServer() {
       String(
         req.headers['x-supabase-anon-key'] ||
           process.env.VITE_SUPABASE_ANON_KEY ||
+          process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
           process.env.SUPABASE_ANON_KEY ||
+          process.env.SUPABASE_PUBLISHABLE_KEY ||
           process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+          process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
           ''
       )
     );

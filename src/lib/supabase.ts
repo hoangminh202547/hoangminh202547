@@ -16,6 +16,10 @@ import type {
   ScheduleStatus,
   ShiftType,
   SupabaseConfig,
+  SupabaseKeyType,
+  SupabaseOverallStatus,
+  SupabaseRuntimeEnv,
+  SupabaseSubsystemStatus,
   UserRole,
   WorkSchedule,
 } from '../types';
@@ -62,53 +66,288 @@ export function normalizeSupabaseUrl(raw: string): string {
   return cleanConfigValue(raw).replace(/\/+$/, '');
 }
 
-export function getEnvSupabaseConfig(): SupabaseConfig {
-  const url = (import.meta.env.VITE_SUPABASE_URL as string | undefined) || '';
-  const anonKey =
-    (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) || '';
-  return { url: normalizeSupabaseUrl(url), anonKey: cleanConfigValue(anonKey) };
-}
-
-export async function fetchRuntimeSupabaseConfig(): Promise<SupabaseConfig | null> {
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
   try {
-    const res = await fetch('/api/public-config', {
-      cache: 'no-store',
-    });
-    if (!res.ok) return null;
-    const json = (await res.json()) as { url?: string; anonKey?: string };
-    const cfg: SupabaseConfig = {
-      url: normalizeSupabaseUrl(json.url || ''),
-      anonKey: cleanConfigValue(json.anonKey || ''),
-    };
-    return isValidSupabaseConfig(cfg) ? cfg : null;
+    const parts = token.split('.');
+    if (parts.length !== 3 || !parts[1]) return null;
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padLength = (4 - (base64.length % 4)) % 4;
+    const padded = base64 + '='.repeat(padLength);
+    const json = atob(padded);
+    return JSON.parse(json) as Record<string, unknown>;
   } catch {
     return null;
   }
 }
 
+export function extractSupabaseProjectRef(rawUrl: string): string {
+  const trimmed = normalizeSupabaseUrl(rawUrl);
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    const match = parsed.hostname.match(/^([a-z0-9-]{8,40})\.supabase\.co$/i);
+    return match ? match[1].toLowerCase() : '';
+  } catch {
+    return '';
+  }
+}
+
+export interface SupabaseKeyInspection {
+  keyType: SupabaseKeyType;
+  role: string;
+  ref: string;
+  isSecret: boolean;
+  isUrl: boolean;
+}
+
+export function inspectSupabaseKey(rawKey: string): SupabaseKeyInspection {
+  const cleaned = cleanConfigValue(rawKey);
+  if (!cleaned) {
+    return { keyType: 'invalid', role: '', ref: '', isSecret: false, isUrl: false };
+  }
+  if (/^https?:\/\//i.test(cleaned) || /\.supabase\.co(\/|$)/i.test(cleaned)) {
+    return { keyType: 'invalid', role: '', ref: '', isSecret: false, isUrl: true };
+  }
+  if (/^sb_secret_/i.test(cleaned)) {
+    return { keyType: 'invalid', role: 'secret', ref: '', isSecret: true, isUrl: false };
+  }
+  if (/^sb_publishable_[A-Za-z0-9_-]{12,}$/i.test(cleaned)) {
+    return { keyType: 'publishable', role: 'anon', ref: '', isSecret: false, isUrl: false };
+  }
+  if (/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(cleaned)) {
+    const payload = decodeJwtPayload(cleaned);
+    if (!payload) {
+      return { keyType: 'invalid', role: '', ref: '', isSecret: false, isUrl: false };
+    }
+    const role = typeof payload.role === 'string' ? payload.role : '';
+    const ref = typeof payload.ref === 'string' ? payload.ref.toLowerCase() : '';
+    if (role === 'service_role') {
+      return { keyType: 'invalid', role, ref, isSecret: true, isUrl: false };
+    }
+    if (!role || role === 'anon') {
+      return { keyType: 'anon_jwt', role: role || 'anon', ref, isSecret: false, isUrl: false };
+    }
+  }
+  return { keyType: 'invalid', role: '', ref: '', isSecret: false, isUrl: false };
+}
+
+export function maskSupabaseKey(rawKey: string): string {
+  const cleaned = cleanConfigValue(rawKey);
+  if (!cleaned) return 'Chưa có';
+  if (cleaned.length <= 12) return '••••••••';
+  if (cleaned.startsWith('sb_publishable_')) {
+    return `sb_publishable_••••${cleaned.slice(-4)}`;
+  }
+  return `${cleaned.slice(0, 6)}••••${cleaned.slice(-4)}`;
+}
+
 export function getSupabaseUrlError(rawUrl: string): string | null {
   const trimmed = normalizeSupabaseUrl(rawUrl);
   if (!trimmed) return 'Vui lòng nhập Supabase Project URL.';
+  if (
+    /^sb_(publishable|secret)_/i.test(trimmed) ||
+    /^eyJ[A-Za-z0-9_-]+\./.test(trimmed)
+  ) {
+    return 'Supabase Project URL không hợp lệ. Vui lòng nhập URL dự án dạng https://<project-ref>.supabase.co. Bạn có thể đang nhập nhầm API Key vào trường URL.';
+  }
   try {
     const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      return 'URL Supabase phải bắt đầu bằng https://';
-    }
     if (
       parsed.hostname === 'supabase.com' ||
       parsed.pathname.includes('/dashboard/')
     ) {
       return 'Đây là link trang quản trị Dashboard. Hãy dùng Project URL dạng https://<project-ref>.supabase.co (trong Project Settings -> API).';
     }
+    if (parsed.protocol !== 'https:') {
+      return 'Supabase Project URL không hợp lệ. Vui lòng nhập URL dự án dạng https://<project-ref>.supabase.co. Bạn có thể đang nhập nhầm API Key vào trường URL.';
+    }
+    if (
+      !/^[a-z0-9-]{8,40}\.supabase\.co$/i.test(parsed.hostname) ||
+      (parsed.pathname !== '/' && parsed.pathname !== '') ||
+      Boolean(parsed.search) ||
+      Boolean(parsed.hash)
+    ) {
+      return 'Supabase Project URL không hợp lệ. Vui lòng nhập URL dự án dạng https://<project-ref>.supabase.co. Bạn có thể đang nhập nhầm API Key vào trường URL.';
+    }
     return null;
   } catch {
-    return 'URL Supabase không đúng định dạng (VD: https://abcdefgh.supabase.co).';
+    return 'Supabase Project URL không hợp lệ. Vui lòng nhập URL dự án dạng https://<project-ref>.supabase.co. Bạn có thể đang nhập nhầm API Key vào trường URL.';
   }
 }
 
+export function getSupabaseKeyError(
+  rawKey: string,
+  rawUrl?: string
+): string | null {
+  const cleaned = cleanConfigValue(rawKey);
+  if (!cleaned) {
+    return 'Public Key không hợp lệ. Vui lòng kiểm tra lại API Key của dự án Supabase.';
+  }
+  const info = inspectSupabaseKey(cleaned);
+  if (info.isUrl) {
+    return 'Public Key không hợp lệ. Bạn có thể đang nhập nhầm Project URL vào trường Public Key.';
+  }
+  if (info.isSecret) {
+    return 'Không được sử dụng Secret Key hoặc Service Role Key ở phía ứng dụng. Hãy dùng Publishable Key (sb_publishable_...) hoặc Anon Key (role anon).';
+  }
+  if (info.keyType === 'invalid') {
+    return 'Public Key không hợp lệ. Vui lòng kiểm tra lại API Key của dự án Supabase.';
+  }
+  if (rawUrl && info.ref) {
+    const urlRef = extractSupabaseProjectRef(rawUrl);
+    if (urlRef && urlRef !== info.ref) {
+      return `Public Key (ref: ${info.ref}) không khớp với Supabase Project URL (ref: ${urlRef}).`;
+    }
+  }
+  return null;
+}
+
+export interface SupabaseConfigValidation {
+  valid: boolean;
+  urlError: string | null;
+  keyError: string | null;
+  projectRef: string;
+  keyType: SupabaseKeyType;
+  maskedKey: string;
+  normalized: SupabaseConfig;
+}
+
+export function validateSupabaseConfig(
+  config: SupabaseConfig
+): SupabaseConfigValidation {
+  const normalized: SupabaseConfig = {
+    url: normalizeSupabaseUrl(config.url || ''),
+    anonKey: cleanConfigValue(config.anonKey || ''),
+  };
+  const urlError = getSupabaseUrlError(normalized.url);
+  const keyError = getSupabaseKeyError(normalized.anonKey, normalized.url);
+  const info = inspectSupabaseKey(normalized.anonKey);
+  const projectRef = extractSupabaseProjectRef(normalized.url);
+  return {
+    valid: !urlError && !keyError,
+    urlError,
+    keyError,
+    projectRef,
+    keyType: info.keyType,
+    maskedKey: maskSupabaseKey(normalized.anonKey),
+    normalized,
+  };
+}
+
 export function isValidSupabaseConfig(config: SupabaseConfig): boolean {
-  if (!config.url || !config.anonKey.trim()) return false;
-  return getSupabaseUrlError(config.url) === null;
+  return validateSupabaseConfig(config).valid;
+}
+
+export function getEnvSupabaseConfig(): SupabaseConfig {
+  const url = (import.meta.env.VITE_SUPABASE_URL as string | undefined) || '';
+  const anonKey =
+    (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ||
+    (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined) ||
+    '';
+  return { url: normalizeSupabaseUrl(url), anonKey: cleanConfigValue(anonKey) };
+}
+
+export function getValidatedEnvSupabaseConfig(): {
+  config: SupabaseConfig;
+  valid: boolean;
+  error: string | null;
+  hasAnyRaw: boolean;
+} {
+  const raw = getEnvSupabaseConfig();
+  const hasAnyRaw = Boolean(raw.url || raw.anonKey);
+  if (!hasAnyRaw) {
+    return { config: raw, valid: false, error: null, hasAnyRaw: false };
+  }
+  const check = validateSupabaseConfig(raw);
+  return {
+    config: check.normalized,
+    valid: check.valid,
+    error: check.urlError || check.keyError,
+    hasAnyRaw: true,
+  };
+}
+
+export function detectClientRuntimeEnv(): SupabaseRuntimeEnv {
+  if (typeof window === 'undefined') return 'local';
+  const host = window.location.hostname.toLowerCase();
+  if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local')) {
+    return 'local';
+  }
+  if (
+    host.includes('aistudio') ||
+    host.includes('run.app') ||
+    host.includes('webcontainer') ||
+    isInsideIframe()
+  ) {
+    return 'ai_studio';
+  }
+  if (host.endsWith('.vercel.app')) {
+    return host.includes('-git-') ? 'vercel_preview' : 'vercel_production';
+  }
+  return 'vercel_production';
+}
+
+export interface RuntimeConfigFetchResult {
+  config: SupabaseConfig | null;
+  valid: boolean;
+  envError: string | null;
+  runtimeEnv: SupabaseRuntimeEnv | null;
+}
+
+export async function fetchRuntimeSupabaseConfig(): Promise<RuntimeConfigFetchResult> {
+  try {
+    const res = await fetch('/api/public-config', {
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      return { config: null, valid: false, envError: null, runtimeEnv: null };
+    }
+    const json = (await res.json()) as {
+      url?: string;
+      anonKey?: string;
+      envError?: string | null;
+      runtimeEnv?: SupabaseRuntimeEnv | null;
+    };
+    const cfg: SupabaseConfig = {
+      url: normalizeSupabaseUrl(json.url || ''),
+      anonKey: cleanConfigValue(json.anonKey || ''),
+    };
+    if (json.envError) {
+      return {
+        config: null,
+        valid: false,
+        envError: json.envError,
+        runtimeEnv: json.runtimeEnv ?? null,
+      };
+    }
+    if (!cfg.url && !cfg.anonKey) {
+      return {
+        config: null,
+        valid: false,
+        envError: null,
+        runtimeEnv: json.runtimeEnv ?? null,
+      };
+    }
+    const validation = validateSupabaseConfig(cfg);
+    return {
+      config: validation.valid ? validation.normalized : null,
+      valid: validation.valid,
+      envError: validation.valid ? null : validation.urlError || validation.keyError,
+      runtimeEnv: json.runtimeEnv ?? null,
+    };
+  } catch {
+    return { config: null, valid: false, envError: null, runtimeEnv: null };
+  }
+}
+
+export function getOAuthCallbackUrl(): string {
+  if (typeof window === 'undefined') return '/auth/callback';
+  return `${window.location.origin}/auth/callback`;
+}
+
+export function getSupabaseProviderCallbackUrl(rawUrl: string): string {
+  const clean = normalizeSupabaseUrl(rawUrl);
+  return clean ? `${clean}/auth/v1/callback` : '';
 }
 
 export function isInsideIframe(): boolean {
@@ -671,7 +910,7 @@ export function mapActivityRow(r: Record<string, unknown>): ActivityLog {
 }
 
 // ============================================================================
-// Connection Diagnostics
+// Connection Diagnostics (Auth + 13 Tables + RLS + Storage + Realtime WS)
 // ============================================================================
 export interface SupabaseDiagnosticItem {
   name: string;
@@ -679,27 +918,103 @@ export interface SupabaseDiagnosticItem {
   status: string;
 }
 
-export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
+export interface SupabaseConnectionTestResult {
   ok: boolean;
+  overallStatus: SupabaseOverallStatus;
   message: string;
   tablesReady?: boolean;
   erpReady?: boolean;
+  authStatus: SupabaseSubsystemStatus;
+  dbStatus: SupabaseSubsystemStatus;
+  realtimeStatus: SupabaseSubsystemStatus;
+  storageStatus: SupabaseSubsystemStatus;
+  projectRef: string;
+  keyType: SupabaseKeyType;
+  maskedKey: string;
+  checkedAt: string;
+  lastError: string | null;
   details?: SupabaseDiagnosticItem[];
-}> {
-  const urlError = getSupabaseUrlError(config.url);
-  if (urlError) {
-    return { ok: false, message: urlError };
-  }
-  if (!config.anonKey.trim()) {
+}
+
+async function probeSupabaseRealtime(
+  client: SupabaseClient
+): Promise<{ ok: boolean; statusText: string; error?: string }> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const channelName = `diag-ping-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const ch = client.channel(channelName);
+
+    const finish = (ok: boolean, statusText: string, error?: string) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      void client.removeChannel(ch);
+      resolve({ ok, statusText, error });
+    };
+
+    const timer = window.setTimeout(() => {
+      finish(
+        false,
+        'Hết thời gian kết nối WebSocket (6s)',
+        'Realtime WebSocket không phản hồi trong 6 giây.'
+      );
+    }, 6000);
+
+    ch.subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        finish(true, 'WebSocket kết nối ổn định');
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        finish(
+          false,
+          `Lỗi kênh Realtime (${status})`,
+          err?.message || `Realtime phản hồi trạng thái ${status}`
+        );
+      }
+    });
+  });
+}
+
+export async function testSupabaseConnection(
+  config: SupabaseConfig
+): Promise<SupabaseConnectionTestResult> {
+  const checkedAt = new Date().toISOString();
+  const validation = validateSupabaseConfig(config);
+  if (!validation.valid) {
+    const errMsg =
+      validation.urlError || validation.keyError || 'Cấu hình Supabase không hợp lệ.';
     return {
       ok: false,
-      message: 'Vui lòng nhập Supabase Anon / Public Key.',
+      overallStatus: 'invalid_config',
+      message: errMsg,
+      authStatus: 'error',
+      dbStatus: 'error',
+      realtimeStatus: 'idle',
+      storageStatus: 'idle',
+      projectRef: validation.projectRef,
+      keyType: validation.keyType,
+      maskedKey: validation.maskedKey,
+      checkedAt,
+      lastError: errMsg,
     };
   }
+
   try {
-    const client = getSupabaseClient(config);
+    const client = getSupabaseClient(validation.normalized);
     if (!client) {
-      return { ok: false, message: 'Không thể khởi tạo Supabase client.' };
+      return {
+        ok: false,
+        overallStatus: 'invalid_config',
+        message: 'Không thể khởi tạo Supabase client.',
+        authStatus: 'error',
+        dbStatus: 'error',
+        realtimeStatus: 'idle',
+        storageStatus: 'idle',
+        projectRef: validation.projectRef,
+        keyType: validation.keyType,
+        maskedKey: validation.maskedKey,
+        checkedAt,
+        lastError: 'Không thể khởi tạo Supabase client.',
+      };
     }
 
     const coreTables = [
@@ -720,27 +1035,29 @@ export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
       'promotions',
     ] as const;
 
-    const [authRes, coreResults, erpResults, storageRes] = await Promise.all([
-      fetchSupabaseAuthSettings(config),
-      Promise.all(
-        coreTables.map(async (t) => ({
-          table: t,
-          res: await client.from(t).select('id', { count: 'exact', head: true }),
-        }))
-      ),
-      Promise.all(
-        erpTables.map(async (t) => ({
-          table: t,
-          res: await client
-            .from(t)
-            .select(t === 'system_settings' ? 'key' : 'id', {
-              count: 'exact',
-              head: true,
-            }),
-        }))
-      ),
-      client.storage.from('internal-media').list('', { limit: 1 }),
-    ]);
+    const [authRes, coreResults, erpResults, storageRes, realtimeRes] =
+      await Promise.all([
+        fetchSupabaseAuthSettings(validation.normalized),
+        Promise.all(
+          coreTables.map(async (t) => ({
+            table: t,
+            res: await client.from(t).select('id', { count: 'exact', head: true }),
+          }))
+        ),
+        Promise.all(
+          erpTables.map(async (t) => ({
+            table: t,
+            res: await client
+              .from(t)
+              .select(t === 'system_settings' ? 'key' : 'id', {
+                count: 'exact',
+                head: true,
+              }),
+          }))
+        ),
+        client.storage.from('internal-media').list('', { limit: 1 }),
+        probeSupabaseRealtime(client),
+      ]);
 
     const details: SupabaseDiagnosticItem[] = [];
     details.push({
@@ -749,6 +1066,12 @@ export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
       status: authRes.ok
         ? `Hoạt động (Google OAuth: ${authRes.googleEnabled ? 'Bật' : 'Tắt'}, Email OTP: ${authRes.emailEnabled ? 'Bật' : 'Tắt'})`
         : authRes.error || 'Không phản hồi',
+    });
+
+    details.push({
+      name: 'Realtime WebSocket',
+      ok: realtimeRes.ok,
+      status: realtimeRes.statusText,
     });
 
     const isMissingTableErr = (msg: string) =>
@@ -763,6 +1086,7 @@ export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
 
     let missingCore = 0;
     let missingErp = 0;
+    let rlsProtectedCount = 0;
     let networkErrMsg = '';
 
     for (const item of coreResults) {
@@ -781,6 +1105,7 @@ export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
           status: 'Chưa tạo (cần chạy schema.sql)',
         });
       } else if (isRlsBlocked(err.message || '')) {
+        rlsProtectedCount += 1;
         details.push({
           name: `Bảng ${item.table}`,
           ok: true,
@@ -812,12 +1137,14 @@ export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
           status: 'Chưa tạo (cần chạy 002_full_erp.sql)',
         });
       } else if (isRlsBlocked(err.message || '')) {
+        rlsProtectedCount += 1;
         details.push({
           name: `Bảng ${item.table}`,
           ok: true,
           status: 'Đã tạo & bật RLS',
         });
       } else {
+        networkErrMsg = networkErrMsg || err.message;
         details.push({
           name: `Bảng ${item.table}`,
           ok: false,
@@ -829,9 +1156,11 @@ export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
     const { data: sessData } = await client.auth.getSession();
     const hasSession = Boolean(sessData?.session);
 
+    let storageStatus: SupabaseSubsystemStatus = 'ok';
     if (storageRes.error) {
       const sMsg = storageRes.error.message || '';
       if (sMsg.toLowerCase().includes('not found') || sMsg.toLowerCase().includes('bucket')) {
+        storageStatus = hasSession ? 'warning' : 'rls_protected';
         details.push({
           name: 'Storage (internal-media)',
           ok: !hasSession,
@@ -840,6 +1169,7 @@ export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
             : 'Bucket private (cần đăng nhập Supabase Auth để xác minh)',
         });
       } else {
+        storageStatus = 'rls_protected';
         details.push({
           name: 'Storage (internal-media)',
           ok: true,
@@ -854,45 +1184,135 @@ export async function testSupabaseConnection(config: SupabaseConfig): Promise<{
       });
     }
 
+    const authStatus: SupabaseSubsystemStatus = authRes.ok ? 'ok' : 'error';
+    const realtimeStatus: SupabaseSubsystemStatus = realtimeRes.ok ? 'ok' : 'error';
+    const dbStatus: SupabaseSubsystemStatus =
+      networkErrMsg
+        ? 'error'
+        : missingCore > 0 || missingErp > 0
+          ? 'warning'
+          : rlsProtectedCount > 0 && !hasSession
+            ? 'rls_protected'
+            : 'ok';
+
     if (!authRes.ok && networkErrMsg) {
-      return { ok: false, message: `Lỗi kết nối Supabase: ${networkErrMsg}`, details };
-    }
-
-    if (missingCore > 0) {
       return {
         ok: false,
-        tablesReady: false,
-        erpReady: false,
+        overallStatus: 'network_error',
+        message: `Lỗi kết nối Supabase: ${networkErrMsg}`,
+        authStatus,
+        dbStatus,
+        realtimeStatus,
+        storageStatus,
+        projectRef: validation.projectRef,
+        keyType: validation.keyType,
+        maskedKey: validation.maskedKey,
+        checkedAt,
+        lastError: networkErrMsg,
         details,
-        message: `Đã kết nối tới Supabase nhưng thiếu ${missingCore} bảng nền tảng. Hãy mở SQL Editor chạy "Schema nền tảng" rồi chạy "Nâng cấp ERP 002".`,
       };
     }
 
-    if (missingErp > 0) {
+    if (!authRes.ok) {
       return {
         ok: false,
+        overallStatus: 'auth_error',
+        message: authRes.error || 'Lỗi kết nối Supabase Auth API.',
+        authStatus,
+        dbStatus,
+        realtimeStatus,
+        storageStatus,
+        projectRef: validation.projectRef,
+        keyType: validation.keyType,
+        maskedKey: validation.maskedKey,
+        checkedAt,
+        lastError: authRes.error || 'Lỗi Supabase Auth API',
+        details,
+      };
+    }
+
+    if (missingCore > 0 || missingErp > 0) {
+      const msg =
+        missingCore > 0
+          ? `Đã kết nối tới Supabase nhưng thiếu ${missingCore} bảng nền tảng. Hãy mở SQL Editor chạy "Schema nền tảng" rồi chạy "Nâng cấp ERP 002".`
+          : `Đã kết nối Supabase (4 bảng cơ bản đã sẵn sàng) nhưng còn thiếu ${missingErp} bảng ERP mới. Hãy chạy script "Nâng cấp ERP 002" trong SQL Editor.`;
+      return {
+        ok: false,
+        overallStatus: 'schema_error',
+        tablesReady: missingCore === 0,
+        erpReady: false,
+        authStatus,
+        dbStatus,
+        realtimeStatus,
+        storageStatus,
+        projectRef: validation.projectRef,
+        keyType: validation.keyType,
+        maskedKey: validation.maskedKey,
+        checkedAt,
+        lastError: msg,
+        details,
+        message: msg,
+      };
+    }
+
+    if (!realtimeRes.ok) {
+      return {
+        ok: false,
+        overallStatus: 'realtime_error',
         tablesReady: true,
-        erpReady: false,
+        erpReady: true,
+        authStatus,
+        dbStatus,
+        realtimeStatus,
+        storageStatus,
+        projectRef: validation.projectRef,
+        keyType: validation.keyType,
+        maskedKey: validation.maskedKey,
+        checkedAt,
+        lastError: realtimeRes.error || realtimeRes.statusText,
         details,
-        message: `Đã kết nối Supabase (4 bảng cơ bản đã sẵn sàng) nhưng còn thiếu ${missingErp} bảng ERP mới (Chấm công, Kho, HSD, Đổi trả, Khuyến mãi...). Hãy chạy script "Nâng cấp ERP 002" trong SQL Editor.`,
+        message: `Kết nối Database thành công (13/13 bảng sẵn sàng) nhưng Realtime WebSocket gặp lỗi: ${realtimeRes.statusText}`,
       };
     }
+
+    const overallStatus: SupabaseOverallStatus =
+      hasSession || rlsProtectedCount === 0 ? 'connected_full' : 'connected_db_rls';
 
     return {
       ok: true,
+      overallStatus,
       tablesReady: true,
       erpReady: true,
+      authStatus,
+      dbStatus,
+      realtimeStatus,
+      storageStatus,
+      projectRef: validation.projectRef,
+      keyType: validation.keyType,
+      maskedKey: validation.maskedKey,
+      checkedAt,
+      lastError: null,
       details,
-      message:
-        'Kết nối Supabase hoạt động đầy đủ: Auth, toàn bộ 13 bảng dữ liệu, RLS và Storage đã sẵn sàng.',
+      message: hasSession
+        ? 'Kết nối hoàn chỉnh: Auth, 13 bảng ERP, RLS, Realtime WebSocket và Storage đang hoạt động.'
+        : 'Kết nối Database & Realtime thành công (13/13 bảng sẵn sàng). Hãy kích hoạt phiên Supabase Auth để đọc/ghi dữ liệu theo RLS.',
     };
   } catch (error) {
+    const errText =
+      error instanceof Error ? error.message : 'Không thể kết nối tới Supabase.';
     return {
       ok: false,
-      message:
-        error instanceof Error
-          ? error.message
-          : 'Không thể kết nối tới Supabase.',
+      overallStatus: 'network_error',
+      message: errText,
+      authStatus: 'error',
+      dbStatus: 'error',
+      realtimeStatus: 'error',
+      storageStatus: 'idle',
+      projectRef: validation.projectRef,
+      keyType: validation.keyType,
+      maskedKey: validation.maskedKey,
+      checkedAt,
+      lastError: errText,
     };
   }
 }

@@ -39,6 +39,41 @@ export interface SupabaseConfig {
   anonKey: string;
 }
 
+export type SupabaseConfigSource =
+  | 'env_build'
+  | 'env_runtime'
+  | 'firestore_user'
+  | 'manual'
+  | 'none';
+
+export type SupabaseRuntimeEnv =
+  | 'vercel_production'
+  | 'vercel_preview'
+  | 'ai_studio'
+  | 'local';
+
+export type SupabaseKeyType = 'publishable' | 'anon_jwt' | 'invalid';
+
+export type SupabaseOverallStatus =
+  | 'not_configured'
+  | 'invalid_config'
+  | 'configured_untested'
+  | 'checking'
+  | 'connected_full'
+  | 'connected_db_rls'
+  | 'auth_error'
+  | 'permission_rls_error'
+  | 'schema_error'
+  | 'realtime_error'
+  | 'network_error';
+
+export type SupabaseSubsystemStatus =
+  | 'idle'
+  | 'ok'
+  | 'warning'
+  | 'error'
+  | 'rls_protected';
+
 export interface ModuleAccessFlags {
   overview: boolean;
   schedule: boolean;
