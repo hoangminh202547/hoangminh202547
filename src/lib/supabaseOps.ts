@@ -1346,17 +1346,76 @@ export async function deleteStorageFiles(
 // ============================================================================
 // Real Supabase Usage Proxy Client Call (/api/supabase-usage)
 // ============================================================================
+export type ResourceSeverity =
+  | 'normal'
+  | 'watch'
+  | 'warning'
+  | 'critical'
+  | 'info'
+  | 'unavailable';
+
+export interface SupabaseResourceMetric {
+  id:
+    | 'database_size'
+    | 'database_connections'
+    | 'api_requests'
+    | 'storage_size'
+    | 'realtime'
+    | 'auth'
+    | 'egress';
+  name: string;
+  supported: boolean;
+  currentValue: number | null;
+  currentFormatted: string;
+  limitValue: number | null;
+  limitFormatted: string | null;
+  usagePercent: number | null;
+  severity: ResourceSeverity;
+  statusLabel: string;
+  detailNote: string;
+  sourceLabel: string;
+  updatedAt: string | null;
+}
+
+export interface SupabaseResourceAlert {
+  id: string;
+  resourceId: SupabaseResourceMetric['id'];
+  resourceName: string;
+  severity: 'watch' | 'warning' | 'critical';
+  title: string;
+  currentFormatted: string;
+  limitFormatted: string | null;
+  usagePercent: number | null;
+  recordedAt: string;
+  recommendation: string;
+}
+
 export interface SupabaseUsageProxyResponse {
   available: boolean;
   reason?: string;
   message?: string;
   projectRef?: string | null;
+  projectName?: string | null;
+  region?: string | null;
+  projectStatus?: string | null;
+  plan?: string | null;
   cached?: boolean;
+  detailCached?: boolean;
+  cacheTtlSeconds?: number;
+  detailCacheTtlSeconds?: number;
+  refreshCooldownSec?: number;
   fetchedAt?: string;
-  projectMeta?: Record<string, unknown> | null;
-  apiCounts?: Record<string, unknown> | null;
-  apiRequests?: Record<string, unknown> | null;
+  detailFetchedAt?: string | null;
+  resources?: SupabaseResourceMetric[];
+  alerts?: SupabaseResourceAlert[];
 }
+
+const USAGE_CLIENT_CACHE_TTL_MS = 5 * 60 * 1000;
+const usageClientCache = new Map<
+  string,
+  { fetchedAt: number; data: SupabaseUsageProxyResponse }
+>();
+const usageInFlight = new Map<string, Promise<SupabaseUsageProxyResponse>>();
 
 export async function fetchSupabaseUsageMetrics(
   supabaseUrl: string,
@@ -1364,15 +1423,48 @@ export async function fetchSupabaseUsageMetrics(
   jwt: string,
   forceRefresh = false
 ): Promise<SupabaseUsageProxyResponse> {
-  const res = await fetch(
-    `/api/supabase-usage${forceRefresh ? '?refresh=1' : ''}`,
-    {
-      headers: {
-        Authorization: `Bearer ${jwt}`,
-        'X-Supabase-Url': supabaseUrl,
-        'X-Supabase-Anon-Key': anonKey,
-      },
+  const cacheKey = supabaseUrl.trim().toLowerCase();
+  const cached = usageClientCache.get(cacheKey);
+  if (
+    !forceRefresh &&
+    cached &&
+    Date.now() - cached.fetchedAt < USAGE_CLIENT_CACHE_TTL_MS
+  ) {
+    return { ...cached.data, cached: true };
+  }
+
+  const inflight = usageInFlight.get(cacheKey);
+  if (inflight) {
+    return inflight;
+  }
+
+  const reqPromise = (async (): Promise<SupabaseUsageProxyResponse> => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 12000);
+    try {
+      const res = await fetch(
+        `/api/supabase-usage${forceRefresh ? '?refresh=1' : ''}`,
+        {
+          headers: {
+            Authorization: `Bearer ${jwt}`,
+            'X-Supabase-Url': supabaseUrl,
+            'X-Supabase-Anon-Key': anonKey,
+          },
+          cache: 'no-store',
+          signal: controller.signal,
+        }
+      );
+      const data = (await res.json()) as SupabaseUsageProxyResponse;
+      if (data.available) {
+        usageClientCache.set(cacheKey, { fetchedAt: Date.now(), data });
+      }
+      return data;
+    } finally {
+      window.clearTimeout(timer);
+      usageInFlight.delete(cacheKey);
     }
-  );
-  return (await res.json()) as SupabaseUsageProxyResponse;
+  })();
+
+  usageInFlight.set(cacheKey, reqPromise);
+  return reqPromise;
 }
