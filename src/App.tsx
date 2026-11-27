@@ -81,13 +81,16 @@ import {
   resolveModuleAccessFlags,
 } from './lib/permissions';
 import {
+  formatYmd,
+  getShiftMeta,
+  resolveSchedulePermissionLevel,
+} from './lib/scheduleMeta';
+import {
   appendActivityLog,
   createBarcodeScanInSupabase,
   createRealtimeSyncSession,
-  createWorkScheduleInSupabase,
   deleteBarcodeScansInSupabase,
   deleteUserAccessInSupabase,
-  deleteWorkScheduleInSupabase,
   detectClientRuntimeEnv,
   extractSupabaseProjectRef,
   fetchAllSyncedData,
@@ -102,7 +105,6 @@ import {
   resetCachedSupabaseClient,
   saveUserAccessInSupabase,
   updateBarcodeScanWithVersion,
-  updateWorkScheduleWithVersion,
   upsertUserProfile,
   validateSupabaseConfig,
   type RealtimeSubscriptionHandle,
@@ -125,6 +127,8 @@ import type {
   EffectivePermissions,
   LeaveRulesConfig,
   NavGroupId,
+  OfficialWorkSchedule,
+  SchedulePermissionLevel,
   ScheduleStatus,
   ShiftDefinition,
   ShiftType,
@@ -266,6 +270,14 @@ function toIso(val: unknown): string | null {
   return null;
 }
 
+function parseScheduleLevel(raw: unknown): SchedulePermissionLevel | undefined {
+  const val = String(raw || '').trim().toLowerCase();
+  if (val === 'view' || val === 'edit' || val === 'manage' || val === 'admin') {
+    return val;
+  }
+  return undefined;
+}
+
 function buildEffectivePermissions(
   email: string,
   access: AuthorizedEmail | null
@@ -350,6 +362,7 @@ function buildEffectivePermissions(
       scheduleEdit: active && access.scheduleEdit,
       scheduleDelete: active && access.scheduleDelete,
       scheduleApprove: active && access.scheduleApprove,
+      scheduleLevel: access.scheduleLevel,
       allowExport: active && access.allowExport,
       activityView: active && access.activityView,
       allowSupabase: active && access.allowSupabase,
@@ -573,6 +586,7 @@ function MainApp() {
   const [uiPrefs, setUiPrefs] = useState<UiPreferences>({
     defaultPageSize: 20,
     compactSidebar: false,
+    autoCollapseSidebar: true,
     autoResetPromoIdle: true,
   });
   const [leaveRules, setLeaveRules] = useState<LeaveRulesConfig>(DEFAULT_LEAVE_RULES);
@@ -616,6 +630,9 @@ function MainApp() {
 
   const [schedules, setSchedules] = useState<WorkSchedule[]>([]);
   const [schedulesLoading, setSchedulesLoading] = useState(true);
+  const [myOfficialTodaySchedules, setMyOfficialTodaySchedules] = useState<
+    OfficialWorkSchedule[]
+  >([]);
 
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
@@ -830,6 +847,9 @@ function MainApp() {
       (snap) => {
         if (!snap.exists()) return;
         const data = snap.data();
+        if (typeof data.displayName === 'string' && data.displayName.trim()) {
+          setCustomDisplayName((prev) => prev || data.displayName.trim());
+        }
         const fbUrl =
           typeof data.supabaseUrl === 'string' ? data.supabaseUrl : '';
         const fbKey =
@@ -936,12 +956,15 @@ function MainApp() {
     }
     if (syncedProfileUidRef.current !== activeUser.uid) {
       try {
-        await upsertUserProfile(supabaseClient, {
+        const profileRes = await upsertUserProfile(supabaseClient, {
           uid: activeUser.uid,
           email: activeUser.email,
           displayName: activeUser.displayName,
           photoURL: activeUser.photoURL,
         });
+        if (profileRes.displayName) {
+          setCustomDisplayName(profileRes.displayName);
+        }
         syncedProfileUidRef.current = activeUser.uid;
       } catch {
         // Non-fatal
@@ -1019,6 +1042,7 @@ function MainApp() {
           scheduleEdit: Boolean(data.scheduleEdit ?? data.allowSchedule ?? defaults.scheduleEdit),
           scheduleDelete: Boolean(data.scheduleDelete ?? defaults.scheduleDelete),
           scheduleApprove: Boolean(data.scheduleApprove ?? defaults.scheduleApprove),
+          scheduleLevel: parseScheduleLevel(data.scheduleLevel),
           allowExport: Boolean(data.allowExport ?? defaults.allowExport),
           activityView: Boolean(data.activityView ?? defaults.activityView),
           allowSupabase: Boolean(data.allowSupabase ?? defaults.allowSupabase),
@@ -1450,6 +1474,7 @@ function MainApp() {
             scheduleEdit: Boolean(data.scheduleEdit ?? data.allowSchedule ?? defaults.scheduleEdit),
             scheduleDelete: Boolean(data.scheduleDelete ?? defaults.scheduleDelete),
             scheduleApprove: Boolean(data.scheduleApprove ?? defaults.scheduleApprove),
+            scheduleLevel: parseScheduleLevel(data.scheduleLevel),
             allowExport: Boolean(data.allowExport ?? defaults.allowExport),
             activityView: Boolean(data.activityView ?? defaults.activityView),
             allowSupabase: Boolean(data.allowSupabase ?? defaults.allowSupabase),
@@ -1614,6 +1639,69 @@ function MainApp() {
     reportFirestoreError,
   ]);
 
+  // Keep today's published Firestore workSchedules synchronized for AttendanceTab
+  useEffect(() => {
+    if (!firebaseUser || !permissions.authorized || !permissions.scheduleView) {
+      setMyOfficialTodaySchedules([]);
+      return;
+    }
+    const path = 'workSchedules';
+    const q = query(collection(db, path), where('staffUid', '==', firebaseUser.uid));
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const todayYmd = formatYmd(new Date());
+        const list: OfficialWorkSchedule[] = [];
+        for (const d of snapshot.docs) {
+          const data = d.data();
+          const date = String(data.date || '');
+          const isPublished = data.isPublished !== false;
+          if (date !== todayYmd || !isPublished) continue;
+          const rawShift = String(data.shiftType || 'ca_sang');
+          const shiftType = (rawShift in {
+            ca_sang: 1,
+            hanh_chinh: 1,
+            ca_chieu: 1,
+            parttime_1700: 1,
+            parttime_1730: 1,
+            parttime_1800: 1,
+            do: 1,
+            al: 1,
+            ph: 1,
+            nb: 1,
+          }
+            ? rawShift
+            : 'ca_sang') as OfficialWorkSchedule['shiftType'];
+          list.push({
+            id: d.id,
+            staffUid: String(data.staffUid || ''),
+            staffName: String(data.staffName || ''),
+            department: String(data.department || ''),
+            date,
+            shiftType,
+            startTime: String(data.startTime || '07:00'),
+            endTime: String(data.endTime || '15:00'),
+            isPublished,
+            sourceRegId: typeof data.sourceRegId === 'string' ? data.sourceRegId : null,
+            note: String(data.note || ''),
+            isTrucDam: Boolean(data.isTrucDam),
+            memberUids: Array.isArray(data.memberUids)
+              ? data.memberUids.filter((x): x is string => typeof x === 'string')
+              : [],
+            createdBy: String(data.createdBy || ''),
+            createdAt: toIso(data.createdAt),
+            updatedAt: toIso(data.updatedAt),
+          });
+        }
+        setMyOfficialTodaySchedules(list);
+      },
+      () => {
+        // Non-fatal fallback to legacy schedules
+      }
+    );
+    return () => unsub();
+  }, [firebaseUser, permissions.authorized, permissions.scheduleView]);
+
   // ============================================================================
   // Activity Log Helper
   // ============================================================================
@@ -1751,6 +1839,10 @@ function MainApp() {
           allowSchedule: params.scheduleView,
           allowExport: params.allowExport,
           allowSupabase: params.allowSupabase,
+          scheduleLevel:
+            params.scheduleLevel ||
+            ROLE_DEFAULT_PERMS[params.role].scheduleLevel ||
+            'view',
           active: params.active,
           note: params.note.slice(0, 300),
           grantedBy,
@@ -2176,259 +2268,6 @@ function MainApp() {
   );
 
   // ============================================================================
-  // Work Schedule CRUD Handlers (with ShiftDefinition + DO quota fields)
-  // ============================================================================
-  const handleCreateSchedule = useCallback(
-    async (data: {
-      employeeName: string;
-      title: string;
-      workDate: string;
-      shiftType: ShiftType;
-      shiftId?: string | null;
-      isDayOff?: boolean;
-      overrideApproved?: boolean;
-      overrideReason?: string;
-      startTime: string;
-      endTime: string;
-      location: string;
-      note: string;
-    }) => {
-      if (!currentUser || !currentUser.email) return;
-
-      if (backendMode === 'supabase' && supabaseClient) {
-        setSyncState('syncing');
-        const newId =
-          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : `sched-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-        const res = await createWorkScheduleInSupabase(supabaseClient, {
-          id: newId,
-          ownerId: currentUser.uid,
-          ownerEmail: currentUser.email,
-          employeeName: data.employeeName.slice(0, 120),
-          title: data.title.slice(0, 150),
-          workDate: data.workDate,
-          shiftType: data.shiftType,
-          shiftId: data.shiftId,
-          isDayOff: data.isDayOff,
-          overrideApproved: data.overrideApproved,
-          overrideReason: data.overrideReason,
-          startTime: data.startTime,
-          endTime: data.endTime,
-          location: data.location.slice(0, 150),
-          note: data.note.slice(0, 400),
-        });
-        if (res.error || !res.data) {
-          setSyncState('error');
-          notify('error', res.error || 'Không thể đăng ký lịch làm việc.');
-          return;
-        }
-        const created = res.data;
-        setSchedules((prev) =>
-          prev.some((w) => w.id === created.id)
-            ? prev
-            : [...prev, created].sort((a, b) =>
-                a.workDate !== b.workDate
-                  ? a.workDate.localeCompare(b.workDate)
-                  : a.startTime.localeCompare(b.startTime)
-              )
-        );
-        setSyncState('synced');
-        setLastSyncedAt(new Date().toISOString());
-        await recordActivity(
-          'schedule',
-          'create',
-          created.id,
-          `Đăng ký "${created.title}" (${created.employeeName} · ${created.workDate})`,
-          {
-            workDate: created.workDate,
-            startTime: created.startTime,
-            endTime: created.endTime,
-            isDayOff: Boolean(created.isDayOff),
-          }
-        );
-        notify('success', 'Đã đăng ký lịch làm việc mới.');
-        return;
-      }
-
-      try {
-        await addDoc(collection(db, 'work_schedules'), {
-          ownerId: currentUser.uid,
-          ownerEmail: currentUser.email,
-          employeeName: data.employeeName.slice(0, 120),
-          title: data.title.slice(0, 150),
-          workDate: data.workDate,
-          shiftType: data.shiftType,
-          startTime: data.startTime,
-          endTime: data.endTime,
-          location: data.location.slice(0, 150),
-          status: 'registered',
-          note: data.note.slice(0, 400),
-          syncedToSupabase: false,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        notify('success', 'Đã đăng ký lịch làm việc mới.');
-      } catch (error) {
-        reportFirestoreError(
-          error,
-          OperationType.CREATE,
-          'work_schedules',
-          'Không thể đăng ký lịch làm việc'
-        );
-      }
-    },
-    [currentUser, backendMode, supabaseClient, recordActivity, notify, reportFirestoreError]
-  );
-
-  const handleUpdateSchedule = useCallback(
-    async (
-      schedule: WorkSchedule,
-      updates: Partial<{
-        employeeName: string;
-        title: string;
-        workDate: string;
-        shiftType: ShiftType;
-        shiftId: string | null;
-        isDayOff: boolean;
-        overrideApproved: boolean;
-        overrideReason: string;
-        startTime: string;
-        endTime: string;
-        location: string;
-        status: ScheduleStatus;
-        note: string;
-      }>
-    ) => {
-      if (!currentUser?.email) return;
-
-      if (backendMode === 'supabase' && supabaseClient) {
-        setSyncState('syncing');
-        const res = await updateWorkScheduleWithVersion(supabaseClient, {
-          id: schedule.id,
-          expectedVersion: schedule.version,
-          actorEmail: currentUser.email,
-          updates,
-        });
-
-        if (res.status === 'error') {
-          setSyncState('error');
-          notify('error', res.error);
-          return;
-        }
-
-        if (res.status === 'conflict') {
-          setSyncState('connected');
-          const srv = res.serverRecord;
-          if (!srv) {
-            setSchedules((prev) => prev.filter((w) => w.id !== schedule.id));
-            notify('info', `Ca "${schedule.title}" đã bị người khác xóa.`);
-            return;
-          }
-          setActiveConflict({
-            entity: 'work_schedules',
-            recordId: schedule.id,
-            title: `Ca làm "${schedule.title}"`,
-            expectedVersion: schedule.version,
-            serverVersion: srv.version,
-            serverUpdatedBy: srv.updatedBy,
-            serverUpdatedAt: srv.updatedAt,
-            localSummary: `${updates.title || schedule.title} · ${updates.status || schedule.status} (${updates.workDate || schedule.workDate})`,
-            serverSummary: `${srv.title} · ${srv.status} (${srv.workDate})`,
-            onReloadLatest: () => {
-              setSchedules((prev) => prev.map((w) => (w.id === srv.id ? srv : w)));
-              notify('info', 'Đã tải bản lịch làm việc mới nhất.');
-            },
-            onForceOverwrite: async () => {
-              await handleUpdateSchedule(srv, updates);
-            },
-          });
-          return;
-        }
-
-        const updated = res.data;
-        setSchedules((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
-        setSyncState('synced');
-        setLastSyncedAt(new Date().toISOString());
-
-        const act: ActivityAction =
-          updates.status === 'confirmed' || updates.status === 'completed'
-            ? 'approve'
-            : updates.status === 'cancelled'
-              ? 'cancel'
-              : 'update';
-        await recordActivity(
-          'schedule',
-          act,
-          updated.id,
-          `${act === 'approve' ? 'Phê duyệt' : act === 'cancel' ? 'Hủy' : 'Cập nhật'} ca "${updated.title}" (${updated.workDate})`,
-          updates as Record<string, unknown>
-        );
-        notify('success', 'Đã cập nhật lịch làm việc.');
-        return;
-      }
-
-      const ref = doc(db, 'work_schedules', schedule.id);
-      try {
-        await updateDoc(ref, {
-          ...updates,
-          syncedToSupabase: false,
-          updatedAt: serverTimestamp(),
-        });
-        notify('success', 'Đã cập nhật lịch làm việc.');
-      } catch (error) {
-        reportFirestoreError(
-          error,
-          OperationType.UPDATE,
-          `work_schedules/${schedule.id}`,
-          'Không thể cập nhật lịch làm việc'
-        );
-      }
-    },
-    [currentUser, backendMode, supabaseClient, recordActivity, notify, reportFirestoreError]
-  );
-
-  const handleDeleteSchedule = useCallback(
-    async (schedule: WorkSchedule) => {
-      if (backendMode === 'supabase' && supabaseClient) {
-        setSyncState('syncing');
-        const res = await deleteWorkScheduleInSupabase(supabaseClient, schedule.id);
-        if (res.error) {
-          setSyncState('error');
-          notify('error', res.error);
-          return;
-        }
-        setSchedules((prev) => prev.filter((w) => w.id !== schedule.id));
-        setSyncState('synced');
-        setLastSyncedAt(new Date().toISOString());
-        await recordActivity(
-          'schedule',
-          'delete',
-          schedule.id,
-          `Xóa ca "${schedule.title}" (${schedule.workDate})`
-        );
-        notify('info', `Đã xóa ca "${schedule.title}".`);
-        return;
-      }
-
-      const ref = doc(db, 'work_schedules', schedule.id);
-      try {
-        await deleteDoc(ref);
-        notify('info', `Đã xóa ca "${schedule.title}".`);
-      } catch (error) {
-        reportFirestoreError(
-          error,
-          OperationType.DELETE,
-          `work_schedules/${schedule.id}`,
-          'Không thể xóa lịch làm việc'
-        );
-      }
-    },
-    [backendMode, supabaseClient, recordActivity, notify, reportFirestoreError]
-  );
-
-  // ============================================================================
   // Supabase Config & Zero-Data-Loss Migration Handlers
   // ============================================================================
   const applyValidatedSupabaseConfig = useCallback(
@@ -2723,6 +2562,41 @@ function MainApp() {
     }
   }, [supabaseClient, supabaseSession, firebaseUser]);
 
+  const scheduleTeamMembers = useMemo(
+    () =>
+      authorizedMembers
+        .filter((m) => m.active)
+        .map((m) => ({
+          email: m.email,
+          displayName: m.displayName || m.email.split('@')[0],
+          department: ROLE_LABELS[m.role],
+        })),
+    [authorizedMembers]
+  );
+
+  const handleScheduleExportLogged = useCallback(
+    (fileName: string, count: number) => {
+      void recordActivity(
+        'export',
+        'export',
+        fileName,
+        `Xuất lịch làm việc (${count} dòng): ${fileName}`
+      );
+    },
+    [recordActivity]
+  );
+
+  const handleScheduleActivity = useCallback(
+    (
+      action: 'create' | 'update' | 'delete' | 'approve' | 'export',
+      targetId: string,
+      summary: string
+    ) => {
+      void recordActivity('schedule', action, targetId, summary);
+    },
+    [recordActivity]
+  );
+
   // ============================================================================
   // Render Gates
   // ============================================================================
@@ -2812,15 +2686,47 @@ function MainApp() {
   const selectTab = (tab: AppTab) => {
     setActiveTab(tab);
     setMobileMenuOpen(false);
+    if (uiPrefs.autoCollapseSidebar !== false && tab !== 'settings') {
+      setUiPrefs((prev) => (prev.compactSidebar ? prev : { ...prev, compactSidebar: true }));
+    }
   };
 
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const myTodaySchedules = schedules.filter(
-    (s) =>
-      s.workDate === todayStr &&
-      normalizeEmail(s.ownerEmail) === normalizeEmail(currentUser.email) &&
-      s.status !== 'cancelled'
-  );
+  const todayStr = formatYmd(new Date());
+  const effectiveScheduleLevel = resolveSchedulePermissionLevel(permissions);
+  const myTodaySchedules: WorkSchedule[] = [
+    ...myOfficialTodaySchedules.map((s) => {
+      const meta = getShiftMeta(s.shiftType);
+      return {
+        id: s.id,
+        ownerId: s.staffUid,
+        ownerEmail: currentUser.email,
+        employeeName: s.staffName,
+        title: meta.label,
+        workDate: s.date,
+        shiftType: 'custom' as ShiftType,
+        isDayOff: meta.isOffDay,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        location: s.department || 'Cửa hàng',
+        status: 'confirmed' as ScheduleStatus,
+        note: s.note,
+        approvedBy: s.createdBy,
+        approvedAt: s.updatedAt,
+        version: 1,
+        updatedBy: s.createdBy,
+        syncedToSupabase: false,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      };
+    }),
+    ...schedules.filter(
+      (s) =>
+        s.workDate === todayStr &&
+        normalizeEmail(s.ownerEmail) === normalizeEmail(currentUser.email) &&
+        s.status !== 'cancelled' &&
+        !myOfficialTodaySchedules.some((o) => o.id === s.id)
+    ),
+  ];
 
   const sidebarCompact = uiPrefs.compactSidebar;
 
@@ -3151,7 +3057,18 @@ function MainApp() {
         </header>
 
         {/* Main Viewport */}
-        <main className="flex-1 px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-24 md:pb-10 max-w-7xl w-full mx-auto">
+        <main
+          onPointerDownCapture={() => {
+            if (
+              uiPrefs.autoCollapseSidebar !== false &&
+              !uiPrefs.compactSidebar &&
+              activeTab !== 'settings'
+            ) {
+              setUiPrefs((prev) => ({ ...prev, compactSidebar: true }));
+            }
+          }}
+          className="flex-1 px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-24 md:pb-10 max-w-7xl w-full mx-auto"
+        >
           <p className="text-sm text-slate-600 mb-5 hidden md:block">
             {TAB_META[activeTab].subtitle}
           </p>
@@ -3169,36 +3086,14 @@ function MainApp() {
 
             {activeTab === 'schedule' && canSeeTab('schedule') && (
               <WorkScheduleTab
-                client={activeSupabaseClient}
-                schedules={schedules}
-                shifts={shifts}
-                leaveRules={leaveRules}
-                loading={schedulesLoading}
-                defaultEmployeeName={currentUser.displayName}
-                currentUserEmail={currentUser.email}
-                canCreate={permissions.scheduleCreate}
-                canEdit={permissions.scheduleEdit}
-                canDelete={permissions.scheduleDelete}
-                canApprove={permissions.scheduleApprove}
+                currentUser={currentUser}
+                firebaseUser={firebaseUser}
+                scheduleLevel={effectiveScheduleLevel}
                 canExport={permissions.allowExport}
-                canSupabase={permissions.allowSupabase}
-                showOwnerEmail={permissions.scopeAll}
-                isStoreManager={isStoreManager}
-                supabaseReady={supabaseReady}
-                isSyncing={isSyncing}
-                onCreateSchedule={handleCreateSchedule}
-                onUpdateSchedule={handleUpdateSchedule}
-                onDeleteSchedule={handleDeleteSchedule}
-                onSyncToSupabase={handleMigrateFromFirebase}
-                onRefreshShifts={refreshShiftsAndRules}
-                onExportLogged={(fileName, count) => {
-                  void recordActivity(
-                    'export',
-                    'export',
-                    fileName,
-                    `Xuất lịch làm việc (${count} dòng): ${fileName}`
-                  );
-                }}
+                departmentLabel={ROLE_LABELS[permissions.role]}
+                teamMembers={scheduleTeamMembers}
+                onExportLogged={handleScheduleExportLogged}
+                onScheduleActivity={handleScheduleActivity}
                 onNotify={notify}
               />
             )}
@@ -3211,6 +3106,11 @@ function MainApp() {
                 shifts={shifts}
                 defaultPageSize={uiPrefs.defaultPageSize}
                 canExport={permissions.allowExport}
+                canManage={
+                  permissions.role === 'store_manager' ||
+                  permissions.role === 'supervisor' ||
+                  permissions.role === 'shift_lead'
+                }
                 onNotify={notify}
                 onLogActivity={(action, targetId, summary) => {
                   void recordActivity('attendance', action, targetId, summary);
@@ -3221,6 +3121,7 @@ function MainApp() {
             {activeTab === 'staff' && canSeeTab('staff') && (
               <StaffProfileTab
                 client={activeSupabaseClient}
+                firebaseUser={firebaseUser}
                 user={currentUser}
                 members={authorizedMembers}
                 onProfileUpdated={(newName) => setCustomDisplayName(newName)}
@@ -3236,6 +3137,7 @@ function MainApp() {
                   permissions.role === 'store_manager' ||
                   permissions.role === 'supervisor'
                 }
+                canExport={permissions.allowExport}
                 defaultPageSize={uiPrefs.defaultPageSize}
                 onNotify={notify}
                 onLogActivity={(action, targetId, summary) => {

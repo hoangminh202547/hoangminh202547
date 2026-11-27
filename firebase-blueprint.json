@@ -87,6 +87,11 @@
           "type": "boolean",
           "description": "Permission to configure and sync with Supabase."
         },
+        "scheduleLevel": {
+          "type": "string",
+          "enum": ["view", "edit", "manage", "admin"],
+          "description": "Optional granular schedule RBAC level."
+        },
         "active": {
           "type": "boolean",
           "description": "Whether access is currently active."
@@ -203,7 +208,7 @@
     },
     "WorkSchedule": {
       "title": "WorkSchedule",
-      "description": "A registered work shift or schedule entry managed by an authorized user or manager.",
+      "description": "Legacy work schedule entry preserved for backward compatibility.",
       "type": "object",
       "properties": {
         "ownerId": {
@@ -304,6 +309,273 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "ShiftRegistration": {
+      "title": "ShiftRegistration",
+      "description": "Staff shift or day-off registration pending manager/admin review.",
+      "type": "object",
+      "properties": {
+        "staffUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the registering staff member."
+        },
+        "staffName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Display name of staff."
+        },
+        "department": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Staff department or position."
+        },
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "description": "Registered date in YYYY-MM-DD."
+        },
+        "shiftType": {
+          "type": "string",
+          "enum": [
+            "ca_sang",
+            "hanh_chinh",
+            "ca_chieu",
+            "parttime_1700",
+            "parttime_1730",
+            "parttime_1800",
+            "do",
+            "al",
+            "ph",
+            "nb"
+          ],
+          "description": "Standard shift or leave code."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional note up to 300 characters."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"],
+          "description": "Approval workflow status."
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Authorized member UIDs."
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of creator."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "staffUid",
+        "staffName",
+        "department",
+        "date",
+        "shiftType",
+        "note",
+        "status",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OfficialWorkSchedule": {
+      "title": "OfficialWorkSchedule",
+      "description": "Official weekly work schedule entry displayed in the matrix.",
+      "type": "object",
+      "properties": {
+        "staffUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Assigned staff UID or deterministic staff key."
+        },
+        "staffName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Staff full name."
+        },
+        "department": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Department or job title."
+        },
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "description": "Date in YYYY-MM-DD."
+        },
+        "shiftType": {
+          "type": "string",
+          "enum": [
+            "ca_sang",
+            "hanh_chinh",
+            "ca_chieu",
+            "parttime_1700",
+            "parttime_1730",
+            "parttime_1800",
+            "do",
+            "al",
+            "ph",
+            "nb"
+          ],
+          "description": "Standard shift or leave code."
+        },
+        "startTime": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^[0-9]{2}:[0-9]{2}$",
+          "description": "Shift start time HH:mm."
+        },
+        "endTime": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^[0-9]{2}:[0-9]{2}$",
+          "description": "Shift end time HH:mm."
+        },
+        "isPublished": {
+          "type": "boolean",
+          "description": "Whether the schedule is visible on the official weekly matrix."
+        },
+        "sourceRegId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Optional linked shiftRegistrations document ID."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Shift note up to 300 characters."
+        },
+        "isTrucDam": {
+          "type": "boolean",
+          "description": "Whether the staff member is on Truc Dam duty."
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Authorized member UIDs."
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Creator Firebase Auth UID."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "staffUid",
+        "staffName",
+        "department",
+        "date",
+        "shiftType",
+        "startTime",
+        "endTime",
+        "isPublished",
+        "sourceRegId",
+        "note",
+        "isTrucDam",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ScheduleWeeklyMatrixConfig": {
+      "title": "ScheduleWeeklyMatrixConfig",
+      "description": "System-wide display order and visibility config for the weekly schedule matrix.",
+      "type": "object",
+      "properties": {
+        "sortMode": {
+          "type": "string",
+          "enum": ["custom", "name_asc", "name_desc", "position_asc", "shifts_desc"],
+          "description": "Active matrix row sorting mode."
+        },
+        "customOrder": {
+          "type": "array",
+          "description": "Ordered list of staffUid values."
+        },
+        "hiddenUids": {
+          "type": "array",
+          "description": "List of hidden staffUid values."
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Authorized member UIDs."
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of last editor."
+        },
+        "updatedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Display name of last editor."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "sortMode",
+        "customOrder",
+        "hiddenUids",
+        "memberUids",
+        "updatedBy",
+        "updatedByName",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -321,7 +593,19 @@
     },
     "/work_schedules/{scheduleId}": {
       "schema": { "$ref": "#/entities/WorkSchedule" },
-      "description": "Work schedule registrations and shift logs owned by authorized users and managed by managers/admins."
+      "description": "Legacy work schedule registrations and shift logs."
+    },
+    "/shiftRegistrations/{regId}": {
+      "schema": { "$ref": "#/entities/ShiftRegistration" },
+      "description": "Staff shift and day-off registrations synchronized in real time."
+    },
+    "/workSchedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/OfficialWorkSchedule" },
+      "description": "Official weekly work schedules synchronized in real time."
+    },
+    "/scheduleConfigs/{configId}": {
+      "schema": { "$ref": "#/entities/ScheduleWeeklyMatrixConfig" },
+      "description": "Weekly matrix sort order and staff visibility config (doc weekly_matrix)."
     }
   }
 }

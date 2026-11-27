@@ -1,8 +1,10 @@
 import { readSheet } from 'read-excel-file/browser';
 import writeXlsxFile, { type Row } from 'write-excel-file/browser';
 import type {
+  AttendanceNoteEntry,
   AttendanceRecord,
   BarcodeScan,
+  CustomerFeedback,
   ExpiryTrackingItem,
   ProductCatalogItem,
   PromotionItem,
@@ -295,6 +297,22 @@ export async function exportSchedulesToExcel(
 // ============================================================================
 // Attendance Excel Export
 // ============================================================================
+const ATTENDANCE_STATUS_VI: Record<AttendanceRecord['status'], string> = {
+  checked_in: 'Đang trong ca',
+  checked_out: 'Đã kết ca',
+  early_leave: 'Về sớm',
+  overtime: 'Tăng ca',
+  clear_time: 'Clear giờ',
+};
+
+const ATTENDANCE_NOTE_VI: Record<AttendanceNoteEntry['type'], string> = {
+  overtime: 'Tăng ca',
+  early_leave: 'Về sớm',
+  clear_time: 'Clear giờ',
+  incident: 'Phát sinh',
+  note: 'Ghi chú',
+};
+
 export async function exportAttendanceToExcel(records: AttendanceRecord[]): Promise<string> {
   const header: Row = [
     { value: 'STT', ...HEADER_STYLE },
@@ -303,7 +321,7 @@ export async function exportAttendanceToExcel(records: AttendanceRecord[]): Prom
     { value: 'Email', ...HEADER_STYLE },
     { value: 'Ca làm', ...HEADER_STYLE },
     { value: 'Loại', ...HEADER_STYLE },
-    { value: 'Giờ vào (Server)', ...HEADER_STYLE },
+    { value: 'Giờ vào (Thực tế)', ...HEADER_STYLE },
     { value: 'Giờ ra', ...HEADER_STYLE },
     { value: 'Trạng thái', ...HEADER_STYLE },
     { value: 'Lịch sử ghi chú', ...HEADER_STYLE },
@@ -318,16 +336,72 @@ export async function exportAttendanceToExcel(records: AttendanceRecord[]): Prom
     { type: String, value: item.isUnscheduled ? 'Ngoài lịch' : 'Theo lịch' },
     { type: String, value: formatDateTime(item.checkInAt) },
     { type: String, value: formatDateTime(item.checkOutAt) },
-    { type: String, value: item.status },
+    { type: String, value: ATTENDANCE_STATUS_VI[item.status] || item.status },
     {
       type: String,
-      value: item.notesHistory.map((n) => `[${n.type}] ${n.content}`).join(' | '),
+      value: item.notesHistory
+        .map((n) => `[${ATTENDANCE_NOTE_VI[n.type] || n.type}] ${n.content}`)
+        .join(' | '),
     },
   ]);
 
   const fileName = `ChamCong_${new Date().toISOString().slice(0, 10)}.xlsx`;
   await writeXlsxFile(
     [{ sheet: 'Chấm công', data: [header, ...rows], columns: Array(10).fill({ width: 20 }) }],
+    { fontFamily: 'Roboto', fontSize: 11 }
+  ).toFile(fileName);
+  return fileName;
+}
+
+// ============================================================================
+// Customer Feedback Excel Export
+// ============================================================================
+export async function exportCustomerFeedbackToExcel(
+  items: CustomerFeedback[]
+): Promise<string> {
+  const header: Row = [
+    { value: 'STT', ...HEADER_STYLE },
+    { value: 'Ngày ghi nhận', ...HEADER_STYLE },
+    { value: 'Thời gian gửi', ...HEADER_STYLE },
+    { value: 'Nhân sự ghi nhận', ...HEADER_STYLE },
+    { value: 'Email', ...HEADER_STYLE },
+    { value: 'Nhóm góp ý', ...HEADER_STYLE },
+    { value: 'Tên sản phẩm', ...HEADER_STYLE },
+    { value: 'Nội dung ý kiến khách hàng', ...HEADER_STYLE },
+    { value: 'Ảnh đính kèm', ...HEADER_STYLE },
+  ];
+
+  const rows: Row[] = items.map((item, idx) => [
+    { type: Number, value: idx + 1 },
+    { type: String, value: item.feedbackDate },
+    { type: String, value: formatDateTime(item.createdAt) },
+    { type: String, value: item.employeeName },
+    { type: String, value: item.ownerEmail },
+    { type: String, value: item.category === 'product' ? 'Sản phẩm' : 'Dịch vụ' },
+    { type: String, value: item.productName || '' },
+    { type: String, value: item.content },
+    { type: String, value: item.imagePath ? 'Có ảnh' : 'Không' },
+  ]);
+
+  const fileName = `YKienKhachHang_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  await writeXlsxFile(
+    [
+      {
+        sheet: 'Ý kiến khách hàng',
+        data: [header, ...rows],
+        columns: [
+          { width: 6 },
+          { width: 14 },
+          { width: 20 },
+          { width: 24 },
+          { width: 26 },
+          { width: 14 },
+          { width: 26 },
+          { width: 48 },
+          { width: 14 },
+        ],
+      },
+    ],
     { fontFamily: 'Roboto', fontSize: 11 }
   ).toFile(fileName);
   return fileName;

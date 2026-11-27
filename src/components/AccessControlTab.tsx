@@ -19,10 +19,12 @@ import {
   SUPER_ADMIN_EMAIL,
   normalizeEmail,
 } from '../lib/permissions';
+import { SCHEDULE_LEVEL_LABELS } from '../lib/scheduleMeta';
 import type {
   AuthorizedEmail,
   ModuleAccessFlags,
   ModulePermissions,
+  SchedulePermissionLevel,
   UserRole,
 } from '../types';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -113,6 +115,10 @@ export function AccessControlTab({
       scheduleEdit: member.scheduleEdit,
       scheduleDelete: member.scheduleDelete,
       scheduleApprove: member.scheduleApprove,
+      scheduleLevel:
+        member.scheduleLevel ||
+        ROLE_DEFAULT_PERMS[member.role].scheduleLevel ||
+        'view',
       allowExport: member.allowExport,
       activityView: member.activityView,
       allowSupabase: member.allowSupabase,
@@ -225,7 +231,12 @@ export function AccessControlTab({
       m.scheduleDelete ? 'Xóa' : null,
       m.scheduleApprove ? 'Duyệt' : null,
     ].filter(Boolean);
-    if (schedOps.length > 0) parts.push(`Lịch làm (${schedOps.join('/')})`);
+    if (schedOps.length > 0) {
+      const levelText = m.scheduleLevel
+        ? ` · Mức: ${SCHEDULE_LEVEL_LABELS[m.scheduleLevel]}`
+        : '';
+      parts.push(`Lịch làm (${schedOps.join('/')}${levelText})`);
+    }
 
     if (m.allowExport) parts.push('Xuất Excel');
     if (m.activityView) parts.push('Nhật ký');
@@ -574,10 +585,34 @@ export function AccessControlTab({
               </div>
 
               {/* Granular Schedule Module Permissions */}
-              <div className="border border-slate-200 rounded-lg p-3.5 space-y-2">
-                <span className="block text-xs font-bold text-slate-800 uppercase tracking-wide">
-                  Phân hệ Lịch làm việc
-                </span>
+              <div className="border border-slate-200 rounded-lg p-3.5 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <span className="block text-xs font-bold text-slate-800 uppercase tracking-wide">
+                    Phân hệ Lịch làm việc (RBAC 4 mức)
+                  </span>
+                  <select
+                    value={perms.scheduleLevel || 'view'}
+                    onChange={(e) => {
+                      const nextLevel = e.target.value as SchedulePermissionLevel;
+                      setPerms((prev) => ({
+                        ...prev,
+                        scheduleLevel: nextLevel,
+                        scheduleView: true,
+                        scheduleCreate: true,
+                        scheduleEdit: nextLevel !== 'view',
+                        scheduleApprove: nextLevel === 'manage' || nextLevel === 'admin',
+                        scheduleDelete: nextLevel === 'manage' || nextLevel === 'admin',
+                      }));
+                    }}
+                    aria-label="Cấp quyền Lịch làm việc"
+                    className="min-h-[38px] px-2.5 py-1.5 text-xs font-medium bg-white border border-slate-300 rounded-lg text-slate-800"
+                  >
+                    <option value="view">view — {SCHEDULE_LEVEL_LABELS.view}</option>
+                    <option value="edit">edit — {SCHEDULE_LEVEL_LABELS.edit}</option>
+                    <option value="manage">manage — {SCHEDULE_LEVEL_LABELS.manage}</option>
+                    <option value="admin">admin — {SCHEDULE_LEVEL_LABELS.admin}</option>
+                  </select>
+                </div>
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                   {(
                     [

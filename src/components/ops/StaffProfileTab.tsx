@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { User as FirebaseUser } from 'firebase/auth';
+import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { Camera, Phone, Save, Search, UserCircle, Users } from 'lucide-react';
+import { db } from '../../lib/firebase';
 import { compressImageToWebP } from '../../lib/media';
 import { ROLE_LABELS } from '../../lib/permissions';
 import {
@@ -18,6 +21,7 @@ import { SignedMediaThumb } from '../SignedMediaThumb';
 
 interface StaffProfileTabProps {
   client: SupabaseClient | null;
+  firebaseUser: FirebaseUser | null;
   user: AuthenticatedUser;
   members: AuthorizedEmail[];
   onProfileUpdated: (newName: string) => void;
@@ -26,6 +30,7 @@ interface StaffProfileTabProps {
 
 export function StaffProfileTab({
   client,
+  firebaseUser,
   user,
   members,
   onProfileUpdated,
@@ -47,6 +52,7 @@ export function StaffProfileTab({
 
   const loadProfiles = useCallback(async (forceRefresh = false) => {
     if (!client) {
+      setDisplayName(user.displayName);
       setLoading(false);
       return;
     }
@@ -62,6 +68,8 @@ export function StaffProfileTab({
       setGender(mine.gender || '');
       setPhone(mine.phone || '');
       setAvatarPath(mine.avatarPath || '');
+    } else {
+      setDisplayName(user.displayName);
     }
     setLoading(false);
   }, [client, user.uid, user.email, user.displayName]);
@@ -78,6 +86,29 @@ export function StaffProfileTab({
       void loadProfiles(true);
     }
   );
+
+  const syncDisplayNameToFirestore = async (trimmedName: string) => {
+    if (!firebaseUser) return;
+    const userRef = doc(db, 'users', firebaseUser.uid);
+    try {
+      const snap = await getDoc(userRef);
+      if (snap.exists()) {
+        await updateDoc(userRef, {
+          displayName: trimmedName.slice(0, 120),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(userRef, {
+          uid: firebaseUser.uid,
+          email: firebaseUser.email || user.email,
+          displayName: trimmedName.slice(0, 120),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch {
+      // Non-fatal if Firestore rules/session differ
+    }
+  };
 
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -127,29 +158,34 @@ export function StaffProfileTab({
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!client) {
-      onNotify('error', 'Cần kết nối Supabase Auth để lưu hồ sơ.');
-      return;
-    }
-    if (!displayName.trim()) {
+    const trimmedName = displayName.trim();
+    if (!trimmedName) {
       onNotify('error', 'Vui lòng nhập họ và tên.');
       return;
     }
+
     setSaving(true);
-    const res = await updateMyProfileDetails(client, user.uid, user.email, {
-      displayName: displayName.trim(),
-      birthDate,
-      gender,
-      phone,
-    });
-    setSaving(false);
-    if (res.error) {
-      onNotify('error', res.error);
-      return;
+    if (client) {
+      const res = await updateMyProfileDetails(client, user.uid, user.email, {
+        displayName: trimmedName,
+        birthDate,
+        gender,
+        phone,
+      });
+      if (res.error) {
+        setSaving(false);
+        onNotify('error', res.error);
+        return;
+      }
     }
-    onProfileUpdated(displayName.trim());
-    onNotify('success', 'Đã lưu hồ sơ nhân sự cá nhân.');
-    void loadProfiles(true);
+
+    await syncDisplayNameToFirestore(trimmedName);
+    setSaving(false);
+    onProfileUpdated(trimmedName);
+    onNotify('success', 'Đã lưu hồ sơ nhân sự cá nhân và cập nhật tên hiển thị hệ thống.');
+    if (client) {
+      void loadProfiles(true);
+    }
   };
 
   const directoryRows = useMemo(() => {
@@ -277,7 +313,9 @@ export function StaffProfileTab({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Họ và tên *</label>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Họ và tên (Tên hiển thị trên hệ thống) *
+              </label>
               <input
                 type="text"
                 required
@@ -336,7 +374,7 @@ export function StaffProfileTab({
           <div className="flex justify-end">
             <button
               type="submit"
-              disabled={saving || !client}
+              disabled={saving || (!client && !firebaseUser)}
               className="min-h-[42px] px-5 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-2"
             >
               <Save className="h-4 w-4" />

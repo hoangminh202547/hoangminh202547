@@ -3,15 +3,21 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   Camera,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
+  FileSpreadsheet,
   MessageSquarePlus,
   Trash2,
   X,
 } from 'lucide-react';
+import { exportCustomerFeedbackToExcel } from '../../lib/excel';
 import { compressImageToWebP } from '../../lib/media';
+import { formatViDate, formatYmd, getWeekBoundsYmd, parseYmd } from '../../lib/scheduleMeta';
 import {
   createCustomerFeedback,
   deleteCustomerFeedback,
+  fetchAllFeedbackForExport,
   fetchFeedbackPage,
   uploadMediaPairToStorage,
   useScopedRealtime,
@@ -25,28 +31,35 @@ interface CustomerFeedbackTabProps {
   client: SupabaseClient | null;
   user: AuthenticatedUser;
   canDeleteAny: boolean;
+  canExport?: boolean;
   defaultPageSize: 20 | 50 | 100;
   onNotify: (type: 'success' | 'error' | 'info', message: string) => void;
-  onLogActivity: (action: 'create' | 'delete', targetId: string, summary: string) => void;
+  onLogActivity: (
+    action: 'create' | 'delete' | 'export',
+    targetId: string,
+    summary: string
+  ) => void;
 }
 
 export function CustomerFeedbackTab({
   client,
   user,
   canDeleteAny,
+  canExport = true,
   defaultPageSize,
   onNotify,
   onLogActivity,
 }: CustomerFeedbackTabProps) {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = formatYmd(new Date());
   const [rows, setRows] = useState<CustomerFeedback[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<20 | 50 | 100>(defaultPageSize);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
 
   // Filters
-  const [dateScope, setDateScope] = useState<'day' | 'month' | 'all'>('day');
+  const [dateScope, setDateScope] = useState<'day' | 'week' | 'month' | 'all'>('day');
   const [dateValue, setDateValue] = useState(todayStr);
   const [selectedStaffEmail, setSelectedStaffEmail] = useState<string>('');
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'product' | 'service'>('ALL');
@@ -63,8 +76,13 @@ export function CustomerFeedbackTab({
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CustomerFeedback | null>(null);
 
+  const weekBounds = useMemo(
+    () => getWeekBoundsYmd(dateValue || todayStr),
+    [dateValue, todayStr]
+  );
+
   const datePrefix = useMemo(() => {
-    if (dateScope === 'all') return '';
+    if (dateScope === 'all' || dateScope === 'week') return '';
     if (dateScope === 'day') return dateValue.slice(0, 10);
     return dateValue.slice(0, 7);
   }, [dateScope, dateValue]);
@@ -79,6 +97,8 @@ export function CustomerFeedbackTab({
       page,
       pageSize,
       datePrefix,
+      dateFrom: dateScope === 'week' ? weekBounds.mon : undefined,
+      dateTo: dateScope === 'week' ? weekBounds.sun : undefined,
       ownerFilter: selectedStaffEmail || undefined,
       categoryFilter,
     });
@@ -89,7 +109,18 @@ export function CustomerFeedbackTab({
       setTotal(res.total);
     }
     setLoading(false);
-  }, [client, page, pageSize, datePrefix, selectedStaffEmail, categoryFilter, onNotify]);
+  }, [
+    client,
+    page,
+    pageSize,
+    dateScope,
+    datePrefix,
+    weekBounds.mon,
+    weekBounds.sun,
+    selectedStaffEmail,
+    categoryFilter,
+    onNotify,
+  ]);
 
   useEffect(() => {
     void loadRows();
@@ -98,6 +129,13 @@ export function CustomerFeedbackTab({
   useScopedRealtime(client, Boolean(client), ['customer_feedbacks'], () => {
     void loadRows();
   });
+
+  const shiftFilterWeek = (deltaDays: number) => {
+    const base = parseYmd(dateValue || todayStr);
+    base.setDate(base.getDate() + deltaDays);
+    setDateValue(formatYmd(base));
+    setPage(1);
+  };
 
   const myTodayCount = useMemo(() => {
     return rows.filter(
@@ -208,6 +246,38 @@ export function CustomerFeedbackTab({
       void loadRows();
     }
     setDeleteTarget(null);
+  };
+
+  const handleExportExcel = async () => {
+    if (!canExport || !client) return;
+    setExporting(true);
+    try {
+      const res = await fetchAllFeedbackForExport(client, {
+        datePrefix,
+        dateFrom: dateScope === 'week' ? weekBounds.mon : undefined,
+        dateTo: dateScope === 'week' ? weekBounds.sun : undefined,
+        ownerFilter: selectedStaffEmail || undefined,
+        categoryFilter,
+      });
+      if (res.error) {
+        onNotify('error', res.error);
+        return;
+      }
+      if (res.rows.length === 0) {
+        onNotify('info', 'Không có dữ liệu phù hợp bộ lọc để xuất Excel.');
+        return;
+      }
+      const fileName = await exportCustomerFeedbackToExcel(res.rows);
+      onNotify('success', `Đã xuất tệp ${fileName} (${res.rows.length} dòng).`);
+      onLogActivity('export', fileName, `Xuất Excel ý kiến khách hàng (${res.rows.length} dòng)`);
+    } catch (err) {
+      onNotify(
+        'error',
+        err instanceof Error ? err.message : 'Không thể xuất file Excel ý kiến khách hàng.'
+      );
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -386,44 +456,94 @@ export function CustomerFeedbackTab({
 
       {/* List & Filters */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="p-4 border-b border-slate-200 flex flex-wrap items-center gap-3">
-          <select
-            value={dateScope}
-            onChange={(e) => {
-              setDateScope(e.target.value as typeof dateScope);
-              setPage(1);
-            }}
-            className="min-h-[40px] px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white"
-          >
-            <option value="day">Theo ngày</option>
-            <option value="month">Theo tháng</option>
-            <option value="all">Tất cả thời gian</option>
-          </select>
-
-          {dateScope !== 'all' && (
-            <input
-              type={dateScope === 'day' ? 'date' : 'month'}
-              value={dateScope === 'day' ? dateValue.slice(0, 10) : dateValue.slice(0, 7)}
+        <div className="p-4 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <select
+              value={dateScope}
               onChange={(e) => {
-                setDateValue(e.target.value);
+                setDateScope(e.target.value as typeof dateScope);
                 setPage(1);
               }}
-              className="min-h-[40px] px-3 py-1.5 text-sm border border-slate-300 rounded-lg font-mono"
-            />
-          )}
+              className="min-h-[40px] px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white"
+            >
+              <option value="day">Theo ngày</option>
+              <option value="week">Theo tuần</option>
+              <option value="month">Theo tháng</option>
+              <option value="all">Tất cả thời gian</option>
+            </select>
 
-          <select
-            value={categoryFilter}
-            onChange={(e) => {
-              setCategoryFilter(e.target.value as typeof categoryFilter);
-              setPage(1);
-            }}
-            className="min-h-[40px] px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white"
-          >
-            <option value="ALL">Tất cả nhóm</option>
-            <option value="product">Sản phẩm</option>
-            <option value="service">Dịch vụ</option>
-          </select>
+            {dateScope === 'week' && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => shiftFilterWeek(-7)}
+                  className="min-h-[40px] px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1"
+                  title="Tuần trước"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <input
+                  type="date"
+                  value={dateValue.slice(0, 10)}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      setDateValue(e.target.value);
+                      setPage(1);
+                    }
+                  }}
+                  className="min-h-[40px] px-3 py-1.5 text-sm border border-slate-300 rounded-lg font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => shiftFilterWeek(7)}
+                  className="min-h-[40px] px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1"
+                  title="Tuần sau"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+                <span className="px-2.5 py-1.5 rounded-lg bg-slate-100 text-xs font-semibold font-mono text-slate-800 tabular-nums">
+                  {formatViDate(weekBounds.mon)} – {formatViDate(weekBounds.sun)}
+                </span>
+              </div>
+            )}
+
+            {(dateScope === 'day' || dateScope === 'month') && (
+              <input
+                type={dateScope === 'day' ? 'date' : 'month'}
+                value={dateScope === 'day' ? dateValue.slice(0, 10) : dateValue.slice(0, 7)}
+                onChange={(e) => {
+                  setDateValue(e.target.value);
+                  setPage(1);
+                }}
+                className="min-h-[40px] px-3 py-1.5 text-sm border border-slate-300 rounded-lg font-mono"
+              />
+            )}
+
+            <select
+              value={categoryFilter}
+              onChange={(e) => {
+                setCategoryFilter(e.target.value as typeof categoryFilter);
+                setPage(1);
+              }}
+              className="min-h-[40px] px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white"
+            >
+              <option value="ALL">Tất cả nhóm</option>
+              <option value="product">Sản phẩm</option>
+              <option value="service">Dịch vụ</option>
+            </select>
+          </div>
+
+          {canExport && (
+            <button
+              type="button"
+              onClick={() => void handleExportExcel()}
+              disabled={exporting || total === 0 || !client}
+              className="min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
+            >
+              <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+              <span>{exporting ? 'Đang xuất...' : 'Xuất Excel'}</span>
+            </button>
+          )}
         </div>
 
         <div className="divide-y divide-slate-100">
@@ -536,7 +656,7 @@ export function CustomerFeedbackTab({
         title="Xóa ý kiến khách hàng"
         description="Bạn có chắc chắn muốn xóa phản hồi khách hàng này?"
         confirmLabel="Xóa"
-        danger
+        variant="danger"
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteTarget(null)}
       />

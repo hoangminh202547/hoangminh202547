@@ -8,6 +8,7 @@ import schemaSql from '../../supabase/schema.sql?raw';
 import migration002Sql from '../../supabase/migrations/002_full_erp.sql?raw';
 import migration003Sql from '../../supabase/migrations/003_fix_rls_policies.sql?raw';
 import migration004Sql from '../../supabase/migrations/004_sync_and_schema_hardening.sql?raw';
+import migration005Sql from '../../supabase/migrations/005_attendance_and_updates.sql?raw';
 import type {
   ActivityAction,
   ActivityLog,
@@ -31,9 +32,12 @@ export const SUPABASE_SCHEMA_SQL = schemaSql;
 export const SUPABASE_MIGRATION_002_SQL = migration002Sql;
 export const SUPABASE_MIGRATION_003_SQL = migration003Sql;
 export const SUPABASE_MIGRATION_004_SQL = migration004Sql;
+export const SUPABASE_MIGRATION_005_SQL = migration005Sql;
 
 export const BARCODE_SCAN_COLUMNS =
   'id,owner_id,owner_email,code,format,session_name,quantity,note,version,updated_by,scanned_at,updated_at';
+export const BARCODE_SCAN_CORE_COLUMNS =
+  'id,owner_id,owner_email,code,format,session_name,quantity,note,scanned_at,updated_at';
 export const WORK_SCHEDULE_COLUMNS =
   'id,owner_id,owner_email,employee_name,title,work_date,shift_type,shift_id,is_day_off,override_approved,override_reason,start_time,end_time,location,status,note,approved_by,approved_at,version,updated_by,created_at,updated_at';
 export const WORK_SCHEDULE_CORE_COLUMNS =
@@ -1416,25 +1420,57 @@ export function formatSupabaseWriteError(
   return msg;
 }
 
+export async function fetchMyProfileDisplayName(
+  client: SupabaseClient,
+  uid: string,
+  email: string
+): Promise<string | null> {
+  const cleanEmail = normalizeEmail(email);
+  const { data: byId } = await client
+    .from('user_profiles')
+    .select('display_name')
+    .eq('id', uid)
+    .maybeSingle();
+  const idName = typeof byId?.display_name === 'string' ? byId.display_name.trim() : '';
+  if (idName) return idName;
+
+  if (cleanEmail) {
+    const { data: byEmail } = await client
+      .from('user_profiles')
+      .select('display_name')
+      .ilike('email', cleanEmail)
+      .maybeSingle();
+    const emailName =
+      typeof byEmail?.display_name === 'string' ? byEmail.display_name.trim() : '';
+    if (emailName) return emailName;
+  }
+  return null;
+}
+
 export async function upsertUserProfile(
   client: SupabaseClient,
   params: { uid: string; email: string; displayName: string; photoURL?: string }
-): Promise<void> {
+): Promise<{ displayName?: string }> {
   const authCheck = await requireAuthenticatedSession(client);
-  if (!authCheck.ok) return;
+  if (!authCheck.ok) return {};
   const email = authCheck.email || normalizeEmail(params.email);
-  if (!email) return;
+  if (!email) return {};
 
-  await client.from('user_profiles').upsert(
-    {
-      id: authCheck.userId,
-      email,
-      display_name: params.displayName.slice(0, 120),
-      avatar_url: (params.photoURL || '').slice(0, 500),
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'id' }
-  );
+  const existingName = await fetchMyProfileDisplayName(client, authCheck.userId, email);
+  const resolvedDisplayName = (existingName || params.displayName || '').trim().slice(0, 120);
+
+  const payload: Record<string, unknown> = {
+    id: authCheck.userId,
+    email,
+    display_name: resolvedDisplayName,
+    updated_at: new Date().toISOString(),
+  };
+  if (params.photoURL) {
+    payload.avatar_url = params.photoURL.slice(0, 500);
+  }
+
+  await client.from('user_profiles').upsert(payload, { onConflict: 'id' });
+  return resolvedDisplayName ? { displayName: resolvedDisplayName } : {};
 }
 
 export async function fetchMyAccessFromSupabase(
@@ -1456,6 +1492,16 @@ export async function fetchMyAccessFromSupabase(
       .maybeSingle();
     data = retry.data as typeof data;
     error = retry.error;
+
+    if (error && isMissingColumnError(error.message)) {
+      const starRetry = await client
+        .from('user_access')
+        .select('*')
+        .ilike('email', cleanEmail)
+        .maybeSingle();
+      data = starRetry.data as typeof data;
+      error = starRetry.error;
+    }
   }
 
   if (error) return { access: null, error: error.message };
@@ -1502,6 +1548,11 @@ export async function fetchAllSyncedData(
       : Promise.resolve({ data: [], error: null }),
   ]);
 
+  let scanData: Record<string, unknown>[] = (scanRes.data || []) as Record<
+    string,
+    unknown
+  >[];
+  let scanError = scanRes.error;
   let schedData: Record<string, unknown>[] = (schedInitial.data || []) as Record<
     string,
     unknown
@@ -1512,7 +1563,41 @@ export async function fetchAllSyncedData(
     unknown
   >[];
   let accessError = accessInitial.error;
+  let logData: Record<string, unknown>[] = (logRes.data || []) as Record<
+    string,
+    unknown
+  >[];
+  let logError = logRes.error;
   let schemaWarning: string | undefined;
+
+  if (scanError && isMissingColumnError(scanError.message)) {
+    const retryScans = await client
+      .from('barcode_scans')
+      .select(BARCODE_SCAN_CORE_COLUMNS)
+      .order('updated_at', { ascending: false })
+      .limit(1500);
+    if (!retryScans.error) {
+      scanData = (retryScans.data || []) as Record<string, unknown>[];
+      scanError = null;
+      schemaWarning =
+        'Database Supabase chưa chạy script 004_sync_and_schema_hardening.sql (bảng barcode_scans đang thiếu cột version/updated_by). Vui lòng chạy script trong Quản lý Supabase để đồng bộ đầy đủ cấu trúc.';
+    } else if (isMissingColumnError(retryScans.error.message)) {
+      const starScans = await client
+        .from('barcode_scans')
+        .select('*')
+        .limit(1500);
+      if (!starScans.error) {
+        scanData = (starScans.data || []) as Record<string, unknown>[];
+        scanError = null;
+        schemaWarning =
+          'Database Supabase chưa chạy script 004_sync_and_schema_hardening.sql (bảng barcode_scans đang thiếu một số cột mở rộng). Vui lòng chạy script trong Quản lý Supabase.';
+      } else {
+        scanError = starScans.error;
+      }
+    } else {
+      scanError = retryScans.error;
+    }
+  }
 
   if (schedError && isMissingColumnError(schedError.message)) {
     const retrySched = await client
@@ -1525,7 +1610,22 @@ export async function fetchAllSyncedData(
       schedData = (retrySched.data || []) as Record<string, unknown>[];
       schedError = null;
       schemaWarning =
+        schemaWarning ||
         'Database Supabase chưa chạy script 004_sync_and_schema_hardening.sql (thiếu một số cột mở rộng của lịch làm việc). Vui lòng chạy script trong Quản lý Supabase để bật đầy đủ cột.';
+    } else if (isMissingColumnError(retrySched.error.message)) {
+      const starSched = await client
+        .from('work_schedules')
+        .select('*')
+        .limit(1500);
+      if (!starSched.error) {
+        schedData = (starSched.data || []) as Record<string, unknown>[];
+        schedError = null;
+        schemaWarning =
+          schemaWarning ||
+          'Database Supabase chưa chạy script 004_sync_and_schema_hardening.sql (thiếu một số cột lịch làm việc). Vui lòng chạy script trong Quản lý Supabase.';
+      } else {
+        schedError = starSched.error;
+      }
     } else {
       schedError = retrySched.error;
     }
@@ -1542,13 +1642,41 @@ export async function fetchAllSyncedData(
       accessError = null;
       schemaWarning =
         schemaWarning ||
-        'Database Supabase chưa chạy script 002_full_erp.sql (thiếu cột module_perms).';
+        'Database Supabase chưa chạy script 004_sync_and_schema_hardening.sql (thiếu cột module_perms).';
+    } else if (isMissingColumnError(retryAccess.error.message)) {
+      const starAccess = await client
+        .from('user_access')
+        .select('*')
+        .limit(500);
+      if (!starAccess.error) {
+        accessData = (starAccess.data || []) as Record<string, unknown>[];
+        accessError = null;
+        schemaWarning =
+          schemaWarning ||
+          'Database Supabase chưa chạy script 004_sync_and_schema_hardening.sql (thiếu một số cột phân quyền).';
+      } else {
+        accessError = starAccess.error;
+      }
     } else {
       accessError = retryAccess.error;
     }
   }
 
-  const err = scanRes.error || schedError || accessError || logRes.error;
+  if (logError && isMissingColumnError(logError.message)) {
+    const starLogs = await client
+      .from('activity_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+    if (!starLogs.error) {
+      logData = (starLogs.data || []) as Record<string, unknown>[];
+      logError = null;
+    } else {
+      logError = starLogs.error;
+    }
+  }
+
+  const err = scanError || schedError || accessError || logError;
   if (err) {
     return {
       scans: [],
@@ -1560,14 +1688,10 @@ export async function fetchAllSyncedData(
   }
 
   return {
-    scans: (scanRes.data || []).map((r) =>
-      mapBarcodeRow(r as Record<string, unknown>)
-    ),
+    scans: scanData.map((r) => mapBarcodeRow(r)),
     schedules: schedData.map((r) => mapScheduleRow(r)),
     members: accessData.map((r) => mapAccessRow(r)),
-    logs: (logRes.data || []).map((r) =>
-      mapActivityRow(r as Record<string, unknown>)
-    ),
+    logs: logData.map((r) => mapActivityRow(r)),
     schemaWarning,
   };
 }
@@ -1590,24 +1714,48 @@ export async function createBarcodeScanInSupabase(
 
   const actorEmail = authCheck.email || normalizeEmail(params.ownerEmail);
   const now = new Date().toISOString();
-  const { data, error } = await client
+  const insertPayload = {
+    id: params.id,
+    owner_id: authCheck.userId,
+    owner_email: actorEmail,
+    code: params.code,
+    format: params.format,
+    session_name: params.sessionName,
+    quantity: params.quantity,
+    note: params.note,
+    version: 1,
+    updated_by: actorEmail,
+    scanned_at: now,
+    updated_at: now,
+  };
+
+  let { data, error } = await client
     .from('barcode_scans')
-    .insert({
-      id: params.id,
-      owner_id: authCheck.userId,
-      owner_email: actorEmail,
-      code: params.code,
-      format: params.format,
-      session_name: params.sessionName,
-      quantity: params.quantity,
-      note: params.note,
-      version: 1,
-      updated_by: actorEmail,
-      scanned_at: now,
-      updated_at: now,
-    })
+    .insert(insertPayload)
     .select()
     .single();
+
+  if (error && isMissingColumnError(error.message)) {
+    const legacyPayload = {
+      id: insertPayload.id,
+      owner_id: insertPayload.owner_id,
+      owner_email: insertPayload.owner_email,
+      code: insertPayload.code,
+      format: insertPayload.format,
+      session_name: insertPayload.session_name,
+      quantity: insertPayload.quantity,
+      note: insertPayload.note,
+      scanned_at: insertPayload.scanned_at,
+      updated_at: insertPayload.updated_at,
+    };
+    const retry = await client
+      .from('barcode_scans')
+      .insert(legacyPayload)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error || !data) {
     return {
@@ -1648,13 +1796,27 @@ export async function updateBarcodeScanWithVersion(
     dbUpdates.session_name = params.updates.sessionName;
   }
 
-  const { data, error } = await client
+  let { data, error } = await client
     .from('barcode_scans')
     .update(dbUpdates)
     .eq('id', params.id)
     .eq('version', params.expectedVersion)
     .select()
     .maybeSingle();
+
+  if (error && isMissingColumnError(error.message)) {
+    const legacyUpdates = { ...dbUpdates };
+    delete legacyUpdates.version;
+    delete legacyUpdates.updated_by;
+    const retry = await client
+      .from('barcode_scans')
+      .update(legacyUpdates)
+      .eq('id', params.id)
+      .select()
+      .maybeSingle();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error) {
     return {
@@ -1732,11 +1894,12 @@ export async function createWorkScheduleInSupabase(
   if (!authCheck.ok) return { error: authCheck.error };
 
   const actorEmail = authCheck.email || normalizeEmail(params.ownerEmail);
+  const targetOwnerEmail = normalizeEmail(params.ownerEmail) || actorEmail;
   const now = new Date().toISOString();
   const payload: Record<string, unknown> = {
     id: params.id,
     owner_id: authCheck.userId,
-    owner_email: actorEmail,
+    owner_email: targetOwnerEmail,
     employee_name: params.employeeName,
     title: params.title,
     work_date: params.workDate,
@@ -1790,6 +1953,19 @@ export async function createWorkScheduleInSupabase(
       .single();
     data = retry.data;
     error = retry.error;
+
+    if (error && isMissingColumnError(error.message)) {
+      const minimalPayload: Record<string, unknown> = { ...legacyPayload };
+      delete minimalPayload.version;
+      delete minimalPayload.updated_by;
+      const minimalRetry = await client
+        .from('work_schedules')
+        .insert(minimalPayload)
+        .select()
+        .single();
+      data = minimalRetry.data;
+      error = minimalRetry.error;
+    }
   }
 
   if (error || !data) {
@@ -1906,6 +2082,19 @@ export async function updateWorkScheduleWithVersion(
       .maybeSingle();
     data = retry.data;
     error = retry.error;
+
+    if (error && isMissingColumnError(error.message)) {
+      delete legacyUpdates.version;
+      delete legacyUpdates.updated_by;
+      const minimalRetry = await client
+        .from('work_schedules')
+        .update(legacyUpdates)
+        .eq('id', params.id)
+        .select()
+        .maybeSingle();
+      data = minimalRetry.data;
+      error = minimalRetry.error;
+    }
   }
 
   if (error) {
@@ -2031,7 +2220,7 @@ export async function saveUserAccessInSupabase(
       .select()
       .maybeSingle();
 
-    if (error && isMissingColumnError(error.message) && 'module_perms' in payload) {
+    if (error && isMissingColumnError(error.message)) {
       const legacyPayload = { ...payload };
       delete legacyPayload.module_perms;
       const retry = await client
@@ -2046,6 +2235,17 @@ export async function saveUserAccessInSupabase(
         .maybeSingle();
       data = retry.data;
       error = retry.error;
+
+      if (error && isMissingColumnError(error.message)) {
+        const minimalRetry = await client
+          .from('user_access')
+          .update(legacyPayload)
+          .eq('id', id)
+          .select()
+          .maybeSingle();
+        data = minimalRetry.data;
+        error = minimalRetry.error;
+      }
     }
 
     if (error) {
@@ -2091,7 +2291,7 @@ export async function saveUserAccessInSupabase(
     .select()
     .single();
 
-  if (error && isMissingColumnError(error.message) && 'module_perms' in payload) {
+  if (error && isMissingColumnError(error.message)) {
     const legacyPayload = { ...payload };
     delete legacyPayload.module_perms;
     const retry = await client
@@ -2109,6 +2309,23 @@ export async function saveUserAccessInSupabase(
       .single();
     data = retry.data;
     error = retry.error;
+
+    if (error && isMissingColumnError(error.message)) {
+      const minimalRetry = await client
+        .from('user_access')
+        .upsert(
+          {
+            id,
+            ...legacyPayload,
+            created_at: now,
+          },
+          { onConflict: 'email' }
+        )
+        .select()
+        .single();
+      data = minimalRetry.data;
+      error = minimalRetry.error;
+    }
   }
 
   if (error || !data) {
@@ -2403,9 +2620,29 @@ export async function pushBarcodeScansToSupabase(
 
   for (let i = 0; i < rows.length; i += 200) {
     const chunk = rows.slice(i, i + 200);
-    const { error } = await client
+    let { error } = await client
       .from('barcode_scans')
       .upsert(chunk, { onConflict: 'id' });
+
+    if (error && isMissingColumnError(error.message)) {
+      const legacyChunk = chunk.map((r) => ({
+        id: r.id,
+        owner_id: r.owner_id,
+        owner_email: r.owner_email,
+        code: r.code,
+        format: r.format,
+        session_name: r.session_name,
+        quantity: r.quantity,
+        note: r.note,
+        scanned_at: r.scanned_at,
+        updated_at: r.updated_at,
+      }));
+      const retry = await client
+        .from('barcode_scans')
+        .upsert(legacyChunk, { onConflict: 'id' });
+      error = retry.error;
+    }
+
     if (error) {
       return {
         syncedIds: [],
@@ -2489,6 +2726,14 @@ export async function pushSchedulesToSupabase(
         .from('work_schedules')
         .upsert(legacyChunk, { onConflict: 'id' });
       error = retry.error;
+
+      if (error && isMissingColumnError(error.message)) {
+        const minimalChunk = legacyChunk.map(({ version: _v, updated_by: _u, ...rest }) => rest);
+        const minimalRetry = await client
+          .from('work_schedules')
+          .upsert(minimalChunk, { onConflict: 'id' });
+        error = minimalRetry.error;
+      }
     }
 
     if (error) {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   BellRing,
@@ -75,6 +75,8 @@ export function GoodsReturnTab({
     actor: string;
     summary: string;
   } | null>(null);
+  const lastLiveNoticeRef = useRef(lastLiveNotice);
+  lastLiveNoticeRef.current = lastLiveNotice;
 
   const [deleteTarget, setDeleteTarget] = useState<ReturnRecordItem | null>(null);
 
@@ -96,7 +98,7 @@ export function GoodsReturnTab({
     else {
       setRows(res.rows);
       setTotal(res.total);
-      if (res.rows[0] && !lastLiveNotice) {
+      if (res.rows[0] && !lastLiveNoticeRef.current) {
         const top = res.rows[0];
         setLastLiveNotice({
           time: top.updatedAt
@@ -110,7 +112,7 @@ export function GoodsReturnTab({
       }
     }
     setLoading(false);
-  }, [client, page, pageSize, dSup, dItem, dMethod, dPt, onNotify, lastLiveNotice, todayStr]);
+  }, [client, page, pageSize, dSup, dItem, dMethod, dPt, onNotify, todayStr]);
 
   useEffect(() => {
     void loadRows();

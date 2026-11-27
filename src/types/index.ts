@@ -93,6 +93,81 @@ export interface ModuleAccessFlags {
   activity: boolean;
 }
 
+export type SchedulePermissionLevel = 'view' | 'edit' | 'manage' | 'admin';
+
+export type ScheduleShiftCode =
+  | 'ca_sang'
+  | 'hanh_chinh'
+  | 'ca_chieu'
+  | 'parttime_1700'
+  | 'parttime_1730'
+  | 'parttime_1800'
+  | 'do'
+  | 'al'
+  | 'ph'
+  | 'nb';
+
+export type ShiftRegistrationStatus = 'pending' | 'approved' | 'rejected';
+
+export type ScheduleMatrixSortMode =
+  | 'custom'
+  | 'name_asc'
+  | 'name_desc'
+  | 'position_asc'
+  | 'shifts_desc';
+
+export interface ShiftRegistration {
+  id: string;
+  staffUid: string;
+  staffName: string;
+  department: string;
+  date: string; // YYYY-MM-DD
+  shiftType: ScheduleShiftCode;
+  note: string;
+  status: ShiftRegistrationStatus;
+  memberUids: string[];
+  createdBy: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface OfficialWorkSchedule {
+  id: string;
+  staffUid: string;
+  staffName: string;
+  department: string;
+  date: string; // YYYY-MM-DD
+  shiftType: ScheduleShiftCode;
+  startTime: string; // HH:mm
+  endTime: string; // HH:mm
+  isPublished: boolean;
+  sourceRegId: string | null;
+  note: string;
+  isTrucDam: boolean;
+  memberUids: string[];
+  createdBy: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface ScheduleMatrixConfig {
+  sortMode: ScheduleMatrixSortMode;
+  customOrder: string[];
+  hiddenUids: string[];
+  memberUids: string[];
+  updatedBy: string;
+  updatedByName: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface ScheduleStaffMember {
+  uid: string;
+  name: string;
+  department: string;
+  email?: string;
+}
+
 export interface ModulePermissions {
   scopeAll: boolean;
   barcodeView: boolean;
@@ -104,6 +179,7 @@ export interface ModulePermissions {
   scheduleEdit: boolean;
   scheduleDelete: boolean;
   scheduleApprove: boolean;
+  scheduleLevel?: SchedulePermissionLevel;
   allowExport: boolean;
   activityView: boolean;
   allowSupabase: boolean;
@@ -214,7 +290,7 @@ export interface WorkSchedule {
 
 export interface AttendanceNoteEntry {
   id: string;
-  type: 'overtime' | 'early_leave' | 'incident' | 'note';
+  type: 'overtime' | 'early_leave' | 'clear_time' | 'incident' | 'note';
   content: string;
   createdAt: string;
   createdBy: string;
@@ -231,7 +307,7 @@ export interface AttendanceRecord {
   checkInAt: string;
   checkOutAt: string | null;
   isUnscheduled: boolean;
-  status: 'checked_in' | 'checked_out' | 'early_leave' | 'overtime';
+  status: 'checked_in' | 'checked_out' | 'early_leave' | 'overtime' | 'clear_time';
   notesHistory: AttendanceNoteEntry[];
   createdAt: string | null;
   updatedAt: string | null;
@@ -404,5 +480,6 @@ export interface ToastMessage {
 export interface UiPreferences {
   defaultPageSize: 20 | 50 | 100;
   compactSidebar: boolean;
+  autoCollapseSidebar?: boolean;
   autoResetPromoIdle: boolean;
 }

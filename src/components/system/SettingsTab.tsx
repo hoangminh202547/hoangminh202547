@@ -88,6 +88,18 @@ export function SettingsTab({
             <label className="flex items-center gap-2 text-sm text-slate-800 cursor-pointer">
               <input
                 type="checkbox"
+                checked={uiPrefs.autoCollapseSidebar !== false}
+                onChange={(e) =>
+                  onUpdateUiPrefs({ ...uiPrefs, autoCollapseSidebar: e.target.checked })
+                }
+                className="h-4 w-4 rounded border-slate-300"
+              />
+              <span>Tự động thu gọn thanh module khi thao tác</span>
+            </label>
+
+            <label className="flex items-center gap-2 text-sm text-slate-800 cursor-pointer">
+              <input
+                type="checkbox"
                 checked={uiPrefs.autoResetPromoIdle}
                 onChange={(e) =>
                   onUpdateUiPrefs({ ...uiPrefs, autoResetPromoIdle: e.target.checked })

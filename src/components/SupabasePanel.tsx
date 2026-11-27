@@ -22,6 +22,7 @@ import {
   SUPABASE_MIGRATION_002_SQL,
   SUPABASE_MIGRATION_003_SQL,
   SUPABASE_MIGRATION_004_SQL,
+  SUPABASE_MIGRATION_005_SQL,
   SUPABASE_SCHEMA_SQL,
   extractSupabaseProjectRef,
   fetchSupabaseAuthSettings,
@@ -151,8 +152,8 @@ export function SupabasePanel({
     useState<SupabaseConfig | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
   const [showSql, setShowSql] = useState(false);
-  const [sqlTab, setSqlTab] = useState<'schema_sync' | 'rls_fix' | 'migration' | 'base'>(
-    'schema_sync'
+  const [sqlTab, setSqlTab] = useState<'attendance_fix' | 'schema_sync' | 'rls_fix' | 'migration' | 'base'>(
+    'attendance_fix'
   );
 
   // In-app Supabase Auth activation state
@@ -463,13 +464,15 @@ export function SupabasePanel({
   };
 
   const activeSqlScript =
-    sqlTab === 'schema_sync'
-      ? SUPABASE_MIGRATION_004_SQL
-      : sqlTab === 'rls_fix'
-        ? SUPABASE_MIGRATION_003_SQL
-        : sqlTab === 'migration'
-          ? SUPABASE_MIGRATION_002_SQL
-          : SUPABASE_SCHEMA_SQL;
+    sqlTab === 'attendance_fix'
+      ? SUPABASE_MIGRATION_005_SQL
+      : sqlTab === 'schema_sync'
+        ? SUPABASE_MIGRATION_004_SQL
+        : sqlTab === 'rls_fix'
+          ? SUPABASE_MIGRATION_003_SQL
+          : sqlTab === 'migration'
+            ? SUPABASE_MIGRATION_002_SQL
+            : SUPABASE_SCHEMA_SQL;
 
   const handleCopySql = async () => {
     try {
@@ -1236,12 +1239,22 @@ export function SupabasePanel({
             <p className="mt-1 text-sm text-slate-600">
               Chạy <span className="font-mono text-xs">schema.sql</span> khi cài mới,{' '}
               <span className="font-mono text-xs">002_full_erp.sql</span> cho bảng ERP,{' '}
-              <span className="font-mono text-xs">003_fix_rls_policies.sql</span> để đồng bộ RLS và{' '}
-              <span className="font-mono text-xs">004_sync_and_schema_hardening.sql</span> để bổ sung cột <span className="font-mono text-xs">approved_at</span> &amp; bật Realtime toàn bộ bảng (an toàn dữ liệu cũ) trong SQL Editor trên Supabase Dashboard.
+              <span className="font-mono text-xs">003_fix_rls_policies.sql</span> để đồng bộ RLS,{' '}
+              <span className="font-mono text-xs">004_sync_and_schema_hardening.sql</span> để bổ sung cột thiếu &amp; Realtime và{' '}
+              <span className="font-mono text-xs">005_attendance_and_updates.sql</span> để mở khóa điều chỉnh/xóa chấm công &amp; Clear giờ trong SQL Editor trên Supabase Dashboard.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             <div className="inline-flex flex-wrap p-1 bg-slate-100 rounded-lg">
+              <button
+                type="button"
+                onClick={() => setSqlTab('attendance_fix')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md ${
+                  sqlTab === 'attendance_fix' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                005_attendance_and_updates.sql (Chấm công)
+              </button>
               <button
                 type="button"
                 onClick={() => setSqlTab('schema_sync')}
@@ -1249,7 +1262,7 @@ export function SupabasePanel({
                   sqlTab === 'schema_sync' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
                 }`}
               >
-                004_sync_and_schema_hardening.sql (approved_at &amp; Realtime)
+                004_sync_and_schema_hardening.sql (Cột thiếu &amp; Realtime)
               </button>
               <button
                 type="button"

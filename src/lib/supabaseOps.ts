@@ -573,6 +573,8 @@ export async function createAttendanceCheckIn(
     workDate: string;
     isUnscheduled: boolean;
     initialNote?: string;
+    initialNoteType?: AttendanceNoteEntry['type'];
+    initialStatus?: AttendanceRecord['status'];
   }
 ): Promise<{ data?: AttendanceRecord; error?: string }> {
   const authCheck = await requireAuthenticatedSession(client);
@@ -581,19 +583,21 @@ export async function createAttendanceCheckIn(
   const actorEmail = authCheck.email || normalizeEmail(params.ownerEmail);
   recordClientDbOp();
   const id = `att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const nowIso = new Date().toISOString();
   const notes: AttendanceNoteEntry[] = params.initialNote?.trim()
     ? [
         {
           id: `note-${Date.now()}`,
-          type: 'note',
+          type: params.initialNoteType || 'note',
           content: params.initialNote.trim(),
-          createdAt: new Date().toISOString(),
+          createdAt: nowIso,
           createdBy: actorEmail,
         },
       ]
     : [];
 
-  const { data, error } = await client
+  const requestedStatus: AttendanceRecord['status'] = params.initialStatus || 'checked_in';
+  let { data, error } = await client
     .from('attendance_logs')
     .insert({
       id,
@@ -603,14 +607,43 @@ export async function createAttendanceCheckIn(
       employee_name: params.employeeName.trim(),
       shift_name: params.shiftName.trim(),
       work_date: params.workDate,
+      check_in_at: nowIso,
       is_unscheduled: params.isUnscheduled,
-      status: 'checked_in',
+      status: requestedStatus,
       notes_history: notes,
     })
     .select(
       'id,schedule_id,owner_id,owner_email,employee_name,shift_name,work_date,check_in_at,check_out_at,is_unscheduled,status,notes_history,created_at,updated_at'
     )
     .single();
+
+  if (
+    error &&
+    requestedStatus === 'clear_time' &&
+    /status_check|violates check constraint/i.test(error.message)
+  ) {
+    const retry = await client
+      .from('attendance_logs')
+      .insert({
+        id,
+        schedule_id: params.scheduleId,
+        owner_id: authCheck.userId,
+        owner_email: actorEmail,
+        employee_name: params.employeeName.trim(),
+        shift_name: params.shiftName.trim(),
+        work_date: params.workDate,
+        check_in_at: nowIso,
+        is_unscheduled: params.isUnscheduled,
+        status: 'checked_in',
+        notes_history: notes,
+      })
+      .select(
+        'id,schedule_id,owner_id,owner_email,employee_name,shift_name,work_date,check_in_at,check_out_at,is_unscheduled,status,notes_history,created_at,updated_at'
+      )
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error || !data) {
     return {
@@ -633,6 +666,7 @@ export async function appendAttendanceNoteOrCheckout(
     noteContent: string;
     nextStatus?: AttendanceRecord['status'];
     markCheckout?: boolean;
+    clearCheckout?: boolean;
   }
 ): Promise<{ data?: AttendanceRecord; error?: string }> {
   const authCheck = await requireAuthenticatedSession(client);
@@ -641,12 +675,13 @@ export async function appendAttendanceNoteOrCheckout(
   const actorEmail = authCheck.email || normalizeEmail(params.actorEmail);
   recordClientDbOp();
   const nextNotes: AttendanceNoteEntry[] = [...record.notesHistory];
+  const nowIso = new Date().toISOString();
   if (params.noteContent.trim()) {
     nextNotes.push({
       id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       type: params.noteType,
       content: params.noteContent.trim(),
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
       createdBy: actorEmail,
     });
   }
@@ -655,12 +690,15 @@ export async function appendAttendanceNoteOrCheckout(
     notes_history: nextNotes,
   };
   if (params.nextStatus) updates.status = params.nextStatus;
-  if (params.markCheckout) {
-    updates.check_out_at = new Date().toISOString();
+  if (params.clearCheckout) {
+    updates.check_out_at = null;
+    if (!params.nextStatus) updates.status = 'clear_time';
+  } else if (params.markCheckout) {
+    updates.check_out_at = nowIso;
     if (!params.nextStatus) updates.status = 'checked_out';
   }
 
-  const { data, error } = await client
+  let { data, error } = await client
     .from('attendance_logs')
     .update(updates)
     .eq('id', record.id)
@@ -668,6 +706,27 @@ export async function appendAttendanceNoteOrCheckout(
       'id,schedule_id,owner_id,owner_email,employee_name,shift_name,work_date,check_in_at,check_out_at,is_unscheduled,status,notes_history,created_at,updated_at'
     )
     .single();
+
+  if (
+    error &&
+    updates.status === 'clear_time' &&
+    /status_check|violates check constraint/i.test(error.message)
+  ) {
+    const fallbackUpdates = {
+      ...updates,
+      status: params.clearCheckout ? 'checked_in' : 'checked_out',
+    };
+    const retry = await client
+      .from('attendance_logs')
+      .update(fallbackUpdates)
+      .eq('id', record.id)
+      .select(
+        'id,schedule_id,owner_id,owner_email,employee_name,shift_name,work_date,check_in_at,check_out_at,is_unscheduled,status,notes_history,created_at,updated_at'
+      )
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error || !data) {
     return {
@@ -679,6 +738,110 @@ export async function appendAttendanceNoteOrCheckout(
     };
   }
   return { data: mapAttendance(data as Record<string, unknown>) };
+}
+
+export async function updateAttendanceRecord(
+  client: SupabaseClient,
+  record: AttendanceRecord,
+  params: {
+    actorEmail: string;
+    employeeName: string;
+    shiftName: string;
+    workDate: string;
+    checkInAt: string;
+    checkOutAt: string | null;
+    status: AttendanceRecord['status'];
+    adjustmentNote?: string;
+    noteType?: AttendanceNoteEntry['type'];
+  }
+): Promise<{ data?: AttendanceRecord; error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
+  const actorEmail = authCheck.email || normalizeEmail(params.actorEmail);
+  recordClientDbOp();
+
+  const nextNotes: AttendanceNoteEntry[] = [...record.notesHistory];
+  if (params.adjustmentNote?.trim()) {
+    nextNotes.push({
+      id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      type: params.noteType || 'note',
+      content: params.adjustmentNote.trim(),
+      createdAt: new Date().toISOString(),
+      createdBy: actorEmail,
+    });
+  }
+
+  const updates: Record<string, unknown> = {
+    employee_name: params.employeeName.trim() || record.employeeName,
+    shift_name: params.shiftName.trim() || record.shiftName,
+    work_date: params.workDate,
+    check_in_at: params.checkInAt,
+    check_out_at: params.checkOutAt,
+    status: params.status,
+    notes_history: nextNotes,
+  };
+
+  let { data, error } = await client
+    .from('attendance_logs')
+    .update(updates)
+    .eq('id', record.id)
+    .select(
+      'id,schedule_id,owner_id,owner_email,employee_name,shift_name,work_date,check_in_at,check_out_at,is_unscheduled,status,notes_history,created_at,updated_at'
+    )
+    .single();
+
+  if (
+    error &&
+    params.status === 'clear_time' &&
+    /status_check|violates check constraint/i.test(error.message)
+  ) {
+    const retry = await client
+      .from('attendance_logs')
+      .update({
+        ...updates,
+        status: params.checkOutAt ? 'checked_out' : 'checked_in',
+      })
+      .eq('id', record.id)
+      .select(
+        'id,schedule_id,owner_id,owner_email,employee_name,shift_name,work_date,check_in_at,check_out_at,is_unscheduled,status,notes_history,created_at,updated_at'
+      )
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
+
+  if (error || !data) {
+    return {
+      error: formatSupabaseWriteError(
+        error?.message,
+        'attendance_logs',
+        'Không thể điều chỉnh thông tin chấm công.'
+      ),
+    };
+  }
+  return { data: mapAttendance(data as Record<string, unknown>) };
+}
+
+export async function deleteAttendanceRecord(
+  client: SupabaseClient,
+  id: string
+): Promise<{ error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { error: authCheck.error };
+
+  recordClientDbOp();
+  const { error } = await client.from('attendance_logs').delete().eq('id', id);
+  if (error) {
+    return {
+      error: formatSupabaseWriteError(
+        error.message,
+        'attendance_logs',
+        'Không thể xóa bản ghi chấm công.'
+      ),
+    };
+  }
+  return {};
 }
 
 // ============================================================================
@@ -706,6 +869,8 @@ export async function fetchFeedbackPage(
     page: number;
     pageSize: number;
     datePrefix: string; // YYYY-MM-DD or YYYY-MM or ''
+    dateFrom?: string;
+    dateTo?: string;
     ownerFilter?: string;
     categoryFilter?: 'ALL' | 'product' | 'service';
   }
@@ -723,7 +888,9 @@ export async function fetchFeedbackPage(
     .order('created_at', { ascending: true }) // Oldest -> Newest default per spec
     .range(from, to);
 
-  if (params.datePrefix) {
+  if (params.dateFrom && params.dateTo) {
+    q = q.gte('feedback_date', params.dateFrom).lte('feedback_date', params.dateTo);
+  } else if (params.datePrefix) {
     q = q.like('feedback_date', `${params.datePrefix}%`);
   }
   if (params.ownerFilter) {
@@ -738,6 +905,44 @@ export async function fetchFeedbackPage(
   return {
     rows: (data || []).map((r) => mapFeedback(r as Record<string, unknown>)),
     total: count ?? 0,
+  };
+}
+
+export async function fetchAllFeedbackForExport(
+  client: SupabaseClient,
+  params: {
+    datePrefix: string;
+    dateFrom?: string;
+    dateTo?: string;
+    ownerFilter?: string;
+    categoryFilter?: 'ALL' | 'product' | 'service';
+  }
+): Promise<{ rows: CustomerFeedback[]; error?: string }> {
+  recordClientDbOp();
+  let q = client
+    .from('customer_feedbacks')
+    .select(
+      'id,owner_id,owner_email,employee_name,feedback_date,category,product_name,content,image_path,image_thumb_path,created_at'
+    )
+    .order('created_at', { ascending: true })
+    .limit(5000);
+
+  if (params.dateFrom && params.dateTo) {
+    q = q.gte('feedback_date', params.dateFrom).lte('feedback_date', params.dateTo);
+  } else if (params.datePrefix) {
+    q = q.like('feedback_date', `${params.datePrefix}%`);
+  }
+  if (params.ownerFilter) {
+    q = q.ilike('owner_email', params.ownerFilter);
+  }
+  if (params.categoryFilter && params.categoryFilter !== 'ALL') {
+    q = q.eq('category', params.categoryFilter);
+  }
+
+  const { data, error } = await q;
+  if (error) return { rows: [], error: error.message };
+  return {
+    rows: (data || []).map((r) => mapFeedback(r as Record<string, unknown>)),
   };
 }
 
