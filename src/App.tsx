@@ -624,6 +624,7 @@ function MainApp() {
   const [syncState, setSyncState] = useState<SyncState>('connecting');
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [realtimeEpoch, setRealtimeEpoch] = useState(0);
   const [activeConflict, setActiveConflict] = useState<EditConflict | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [orphanedCallback, setOrphanedCallback] = useState<{
@@ -632,6 +633,8 @@ function MainApp() {
 
   const realtimeRef = useRef<RealtimeSubscriptionHandle | null>(null);
   const prevChannelDisconnectedRef = useRef(false);
+  const realtimeRetryCountRef = useRef(0);
+  const schemaWarningShownRef = useRef(false);
   const syncedProfileUidRef = useRef<string | null>(null);
   const hydrateInFlightRef = useRef<Promise<void> | null>(null);
   const lastKnownAccessMetaRef = useRef<{
@@ -1155,6 +1158,10 @@ function MainApp() {
       if (permissions.activityView) {
         setActivityLogs(res.logs);
       }
+      if (res.schemaWarning && !schemaWarningShownRef.current) {
+        schemaWarningShownRef.current = true;
+        notify('info', res.schemaWarning);
+      }
       setScansLoading(false);
       setSchedulesLoading(false);
       setMembersLoading(false);
@@ -1196,6 +1203,7 @@ function MainApp() {
     }
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     setSyncState(navigator.onLine ? 'connecting' : 'disconnected');
 
     void hydrateSupabaseData();
@@ -1320,6 +1328,7 @@ function MainApp() {
       onChannelStatus: (status) => {
         if (cancelled) return;
         if (status === 'SUBSCRIBED') {
+          realtimeRetryCountRef.current = 0;
           if (prevChannelDisconnectedRef.current) {
             prevChannelDisconnectedRef.current = false;
             void hydrateSupabaseData();
@@ -1328,7 +1337,23 @@ function MainApp() {
           }
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
           prevChannelDisconnectedRef.current = true;
-          setSyncState('error');
+          if (
+            typeof navigator !== 'undefined' &&
+            navigator.onLine &&
+            realtimeRetryCountRef.current < 3
+          ) {
+            realtimeRetryCountRef.current += 1;
+            const attempt = realtimeRetryCountRef.current;
+            setSyncState('connecting');
+            if (retryTimer) clearTimeout(retryTimer);
+            retryTimer = setTimeout(() => {
+              if (!cancelled) {
+                setRealtimeEpoch((n) => n + 1);
+              }
+            }, 3500 * attempt);
+          } else {
+            setSyncState('error');
+          }
         } else if (status === 'CLOSED') {
           prevChannelDisconnectedRef.current = true;
           setSyncState('disconnected');
@@ -1340,7 +1365,9 @@ function MainApp() {
 
     const handleOnline = () => {
       if (cancelled) return;
+      realtimeRetryCountRef.current = 0;
       setSyncState('connecting');
+      setRealtimeEpoch((n) => n + 1);
       void hydrateSupabaseData();
     };
     const handleOffline = () => {
@@ -1354,6 +1381,10 @@ function MainApp() {
 
     return () => {
       cancelled = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       if (realtimeRef.current === handle) {
@@ -1369,6 +1400,7 @@ function MainApp() {
     permissions.authorized,
     permissions.role,
     permissions.activityView,
+    realtimeEpoch,
     hydrateSupabaseData,
     refreshSupabaseAccess,
     refreshShiftsAndRules,
@@ -2502,7 +2534,9 @@ function MainApp() {
     if (backendMode === 'supabase') {
       setIsSyncing(true);
       try {
+        realtimeRetryCountRef.current = 0;
         appCache.clear();
+        setRealtimeEpoch((n) => n + 1);
         await hydrateSupabaseData();
         notify('success', 'Đã đồng bộ lại dữ liệu mới nhất từ Supabase.');
       } finally {
@@ -3324,7 +3358,7 @@ function MainApp() {
                   legacyCounts={{
                     scans: scans.filter((s) => !s.syncedToSupabase).length,
                     schedules: schedules.filter((w) => !w.syncedToSupabase).length,
-                    members: authorizedMembers.length,
+                    members: backendMode === 'firebase' ? authorizedMembers.length : 0,
                   }}
                   isSyncing={isSyncing}
                   currentUserEmail={currentUser.email}

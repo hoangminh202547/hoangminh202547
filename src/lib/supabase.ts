@@ -36,10 +36,24 @@ export const BARCODE_SCAN_COLUMNS =
   'id,owner_id,owner_email,code,format,session_name,quantity,note,version,updated_by,scanned_at,updated_at';
 export const WORK_SCHEDULE_COLUMNS =
   'id,owner_id,owner_email,employee_name,title,work_date,shift_type,shift_id,is_day_off,override_approved,override_reason,start_time,end_time,location,status,note,approved_by,approved_at,version,updated_by,created_at,updated_at';
+export const WORK_SCHEDULE_CORE_COLUMNS =
+  'id,owner_id,owner_email,employee_name,title,work_date,shift_type,start_time,end_time,location,status,note,version,updated_by,created_at,updated_at';
 export const USER_ACCESS_COLUMNS =
   'id,email,display_name,role,active,scope_all,barcode_view,barcode_create,barcode_edit,barcode_delete,schedule_view,schedule_create,schedule_edit,schedule_delete,schedule_approve,allow_export,activity_view,allow_supabase,module_perms,note,granted_by,version,created_at,updated_at';
+export const USER_ACCESS_CORE_COLUMNS =
+  'id,email,display_name,role,active,scope_all,barcode_view,barcode_create,barcode_edit,barcode_delete,schedule_view,schedule_create,schedule_edit,schedule_delete,schedule_approve,allow_export,activity_view,allow_supabase,note,granted_by,version,created_at,updated_at';
 export const ACTIVITY_LOG_COLUMNS =
   'id,actor_id,actor_email,actor_name,actor_role,module,action,target_id,summary,changes,created_at';
+
+export function isMissingColumnError(rawMessage: string | undefined): boolean {
+  const msg = (rawMessage || '').trim();
+  if (!msg) return false;
+  return (
+    /could not find the ['"]?[a-z0-9_]+['"]? column/i.test(msg) ||
+    /column .* does not exist/i.test(msg) ||
+    /\b42703\b/.test(msg)
+  );
+}
 
 /**
  * Persistent storage adapter for Supabase Auth (1-time login across reloads & tabs)
@@ -400,7 +414,7 @@ export function getSupabaseClient(
 ): SupabaseClient | null {
   if (!isValidSupabaseConfig(config)) return null;
   const cleanUrl = normalizeSupabaseUrl(config.url);
-  const cleanKey = config.anonKey.trim();
+  const cleanKey = cleanConfigValue(config.anonKey);
   const key = `${cleanUrl}::${cleanKey}`;
   if (cachedClient && cachedClientKey === key) {
     return cachedClient;
@@ -1427,11 +1441,22 @@ export async function fetchMyAccessFromSupabase(
   client: SupabaseClient,
   email: string
 ): Promise<{ access: AuthorizedEmail | null; error?: string }> {
-  const { data, error } = await client
+  const cleanEmail = normalizeEmail(email);
+  let { data, error } = await client
     .from('user_access')
     .select(USER_ACCESS_COLUMNS)
-    .eq('email', normalizeEmail(email))
+    .ilike('email', cleanEmail)
     .maybeSingle();
+
+  if (error && isMissingColumnError(error.message)) {
+    const retry = await client
+      .from('user_access')
+      .select(USER_ACCESS_CORE_COLUMNS)
+      .ilike('email', cleanEmail)
+      .maybeSingle();
+    data = retry.data as typeof data;
+    error = retry.error;
+  }
 
   if (error) return { access: null, error: error.message };
   if (!data) return { access: null };
@@ -1447,8 +1472,9 @@ export async function fetchAllSyncedData(
   members: AuthorizedEmail[];
   logs: ActivityLog[];
   error?: string;
+  schemaWarning?: string;
 }> {
-  const [scanRes, schedRes, accessRes, logRes] = await Promise.all([
+  const [scanRes, schedInitial, accessInitial, logRes] = await Promise.all([
     client
       .from('barcode_scans')
       .select(BARCODE_SCAN_COLUMNS)
@@ -1476,7 +1502,53 @@ export async function fetchAllSyncedData(
       : Promise.resolve({ data: [], error: null }),
   ]);
 
-  const err = scanRes.error || schedRes.error || accessRes.error || logRes.error;
+  let schedData: Record<string, unknown>[] = (schedInitial.data || []) as Record<
+    string,
+    unknown
+  >[];
+  let schedError = schedInitial.error;
+  let accessData: Record<string, unknown>[] = (accessInitial.data || []) as Record<
+    string,
+    unknown
+  >[];
+  let accessError = accessInitial.error;
+  let schemaWarning: string | undefined;
+
+  if (schedError && isMissingColumnError(schedError.message)) {
+    const retrySched = await client
+      .from('work_schedules')
+      .select(WORK_SCHEDULE_CORE_COLUMNS)
+      .order('work_date', { ascending: true })
+      .order('start_time', { ascending: true })
+      .limit(1500);
+    if (!retrySched.error) {
+      schedData = (retrySched.data || []) as Record<string, unknown>[];
+      schedError = null;
+      schemaWarning =
+        'Database Supabase chưa chạy script 004_sync_and_schema_hardening.sql (thiếu một số cột mở rộng của lịch làm việc). Vui lòng chạy script trong Quản lý Supabase để bật đầy đủ cột.';
+    } else {
+      schedError = retrySched.error;
+    }
+  }
+
+  if (accessError && isMissingColumnError(accessError.message)) {
+    const retryAccess = await client
+      .from('user_access')
+      .select(USER_ACCESS_CORE_COLUMNS)
+      .order('email', { ascending: true })
+      .limit(500);
+    if (!retryAccess.error) {
+      accessData = (retryAccess.data || []) as Record<string, unknown>[];
+      accessError = null;
+      schemaWarning =
+        schemaWarning ||
+        'Database Supabase chưa chạy script 002_full_erp.sql (thiếu cột module_perms).';
+    } else {
+      accessError = retryAccess.error;
+    }
+  }
+
+  const err = scanRes.error || schedError || accessError || logRes.error;
   if (err) {
     return {
       scans: [],
@@ -1491,15 +1563,12 @@ export async function fetchAllSyncedData(
     scans: (scanRes.data || []).map((r) =>
       mapBarcodeRow(r as Record<string, unknown>)
     ),
-    schedules: (schedRes.data || []).map((r) =>
-      mapScheduleRow(r as Record<string, unknown>)
-    ),
-    members: (accessRes.data || []).map((r) =>
-      mapAccessRow(r as Record<string, unknown>)
-    ),
+    schedules: schedData.map((r) => mapScheduleRow(r)),
+    members: accessData.map((r) => mapAccessRow(r)),
     logs: (logRes.data || []).map((r) =>
       mapActivityRow(r as Record<string, unknown>)
     ),
+    schemaWarning,
   };
 }
 
@@ -1689,11 +1758,39 @@ export async function createWorkScheduleInSupabase(
   if (params.overrideApproved !== undefined) payload.override_approved = params.overrideApproved;
   if (params.overrideReason !== undefined) payload.override_reason = params.overrideReason;
 
-  const { data, error } = await client
+  let { data, error } = await client
     .from('work_schedules')
     .insert(payload)
     .select()
     .single();
+
+  if (error && isMissingColumnError(error.message)) {
+    const legacyPayload = {
+      id: payload.id,
+      owner_id: payload.owner_id,
+      owner_email: payload.owner_email,
+      employee_name: payload.employee_name,
+      title: payload.title,
+      work_date: payload.work_date,
+      shift_type: payload.shift_type,
+      start_time: payload.start_time,
+      end_time: payload.end_time,
+      location: payload.location,
+      status: payload.status,
+      note: payload.note,
+      version: payload.version,
+      updated_by: payload.updated_by,
+      created_at: payload.created_at,
+      updated_at: payload.updated_at,
+    };
+    const retry = await client
+      .from('work_schedules')
+      .insert(legacyPayload)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error || !data) {
     return {
@@ -1784,13 +1881,32 @@ export async function updateWorkScheduleWithVersion(
     }
   }
 
-  const { data, error } = await client
+  let { data, error } = await client
     .from('work_schedules')
     .update(dbUpdates)
     .eq('id', params.id)
     .eq('version', params.expectedVersion)
     .select()
     .maybeSingle();
+
+  if (error && isMissingColumnError(error.message)) {
+    const legacyUpdates = { ...dbUpdates };
+    delete legacyUpdates.approved_by;
+    delete legacyUpdates.approved_at;
+    delete legacyUpdates.shift_id;
+    delete legacyUpdates.is_day_off;
+    delete legacyUpdates.override_approved;
+    delete legacyUpdates.override_reason;
+    const retry = await client
+      .from('work_schedules')
+      .update(legacyUpdates)
+      .eq('id', params.id)
+      .eq('version', params.expectedVersion)
+      .select()
+      .maybeSingle();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error) {
     return {
@@ -1904,7 +2020,7 @@ export async function saveUserAccessInSupabase(
   }
 
   if (params.isEdit && params.expectedVersion !== undefined) {
-    const { data, error } = await client
+    let { data, error } = await client
       .from('user_access')
       .update({
         ...payload,
@@ -1914,6 +2030,23 @@ export async function saveUserAccessInSupabase(
       .eq('version', params.expectedVersion)
       .select()
       .maybeSingle();
+
+    if (error && isMissingColumnError(error.message) && 'module_perms' in payload) {
+      const legacyPayload = { ...payload };
+      delete legacyPayload.module_perms;
+      const retry = await client
+        .from('user_access')
+        .update({
+          ...legacyPayload,
+          version: params.expectedVersion + 1,
+        })
+        .eq('id', id)
+        .eq('version', params.expectedVersion)
+        .select()
+        .maybeSingle();
+      data = retry.data;
+      error = retry.error;
+    }
 
     if (error) {
       return {
@@ -1944,7 +2077,7 @@ export async function saveUserAccessInSupabase(
     };
   }
 
-  const { data, error } = await client
+  let { data, error } = await client
     .from('user_access')
     .upsert(
       {
@@ -1957,6 +2090,26 @@ export async function saveUserAccessInSupabase(
     )
     .select()
     .single();
+
+  if (error && isMissingColumnError(error.message) && 'module_perms' in payload) {
+    const legacyPayload = { ...payload };
+    delete legacyPayload.module_perms;
+    const retry = await client
+      .from('user_access')
+      .upsert(
+        {
+          id,
+          ...legacyPayload,
+          version: 1,
+          created_at: now,
+        },
+        { onConflict: 'email' }
+      )
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error || !data) {
     return {
@@ -2079,17 +2232,26 @@ export interface RealtimeSubscriptionHandle {
   unsubscribe: () => Promise<void>;
 }
 
+let realtimeChannelSeq = 0;
+let activeBroadcastSessionId = 0;
+
 export function createRealtimeSyncSession(
   client: SupabaseClient,
   handlers: RealtimeHandlers
 ): RealtimeSubscriptionHandle {
-  // Single Postgres Changes channel for all core + reference tables (1 WebSocket channel total)
+  const sessionSeq = ++realtimeChannelSeq;
+  activeBroadcastSessionId = sessionSeq;
+  let disposed = false;
+
+  // Unique channel name per session prevents async removeChannel() of an older effect
+  // cleanup from tearing down a newly mounted StrictMode / permission-updated channel.
   const dbChannel: RealtimeChannel = client
-    .channel('tpcn-db-realtime-sync')
+    .channel(`tpcn-db-realtime-sync-${sessionSeq}`)
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'barcode_scans' },
       (payload) => {
+        if (disposed) return;
         const type = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE';
         const newRow =
           payload.new && Object.keys(payload.new).length > 0
@@ -2106,6 +2268,7 @@ export function createRealtimeSyncSession(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'work_schedules' },
       (payload) => {
+        if (disposed) return;
         const type = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE';
         const newRow =
           payload.new && Object.keys(payload.new).length > 0
@@ -2122,6 +2285,7 @@ export function createRealtimeSyncSession(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'user_access' },
       (payload) => {
+        if (disposed) return;
         const type = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE';
         const newRow =
           payload.new && Object.keys(payload.new).length > 0
@@ -2138,6 +2302,7 @@ export function createRealtimeSyncSession(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'activity_logs' },
       (payload) => {
+        if (disposed) return;
         if (payload.new && Object.keys(payload.new).length > 0) {
           handlers.onActivityInsert(
             mapActivityRow(payload.new as Record<string, unknown>)
@@ -2149,17 +2314,18 @@ export function createRealtimeSyncSession(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'shift_definitions' },
       () => {
-        handlers.onReferenceDataChange?.('shift_definitions');
+        if (!disposed) handlers.onReferenceDataChange?.('shift_definitions');
       }
     )
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'system_settings' },
       () => {
-        handlers.onReferenceDataChange?.('system_settings');
+        if (!disposed) handlers.onReferenceDataChange?.('system_settings');
       }
     )
     .subscribe((status) => {
+      if (disposed) return;
       if (
         status === 'SUBSCRIBED' ||
         status === 'CHANNEL_ERROR' ||
@@ -2170,13 +2336,13 @@ export function createRealtimeSyncSession(
       }
     });
 
-  // Broadcast channel for instant team coordination alerts (e.g. RBAC changes / force sync)
+  // Broadcast channel shares a common topic across devices/tabs for FORCE_RESYNC signals
   const broadcastChannel: RealtimeChannel = client
     .channel('tpcn-collab-broadcast', {
       config: { broadcast: { self: false, ack: false } },
     })
     .on('broadcast', { event: 'sync-signal' }, ({ payload }) => {
-      if (handlers.onBroadcastEvent && payload) {
+      if (!disposed && handlers.onBroadcastEvent && payload) {
         handlers.onBroadcastEvent(
           payload as { event: string; senderEmail?: string; message?: string }
         );
@@ -2193,10 +2359,11 @@ export function createRealtimeSyncSession(
       });
     },
     unsubscribe: async () => {
-      await Promise.all([
-        client.removeChannel(dbChannel),
-        client.removeChannel(broadcastChannel),
-      ]);
+      disposed = true;
+      await client.removeChannel(dbChannel);
+      if (activeBroadcastSessionId === sessionSeq) {
+        await client.removeChannel(broadcastChannel);
+      }
     },
   };
 }
@@ -2225,7 +2392,7 @@ export async function pushBarcodeScansToSupabase(
       code: s.code,
       format: s.format,
       session_name: s.sessionName,
-      quantity: s.quantity,
+      quantity: Math.max(1, Math.min(999999, Math.round(s.quantity || 1))),
       note: s.note || '',
       version: s.version || 1,
       updated_by: normalizeEmail(s.updatedBy || cleanOwnerEmail || authCheck.email),
@@ -2234,18 +2401,21 @@ export async function pushBarcodeScansToSupabase(
     };
   });
 
-  const { error } = await client
-    .from('barcode_scans')
-    .upsert(rows, { onConflict: 'id' });
-  if (error) {
-    return {
-      syncedIds: [],
-      error: formatSupabaseWriteError(
-        error.message,
-        'barcode_scans',
-        'Không thể chuyển dữ liệu mã vạch sang Supabase.'
-      ),
-    };
+  for (let i = 0; i < rows.length; i += 200) {
+    const chunk = rows.slice(i, i + 200);
+    const { error } = await client
+      .from('barcode_scans')
+      .upsert(chunk, { onConflict: 'id' });
+    if (error) {
+      return {
+        syncedIds: [],
+        error: formatSupabaseWriteError(
+          error.message,
+          'barcode_scans',
+          'Không thể chuyển dữ liệu mã vạch sang Supabase.'
+        ),
+      };
+    }
   }
   return { syncedIds: scans.map((s) => s.id) };
 }
@@ -2290,18 +2460,47 @@ export async function pushSchedulesToSupabase(
     };
   });
 
-  const { error } = await client
-    .from('work_schedules')
-    .upsert(rows, { onConflict: 'id' });
-  if (error) {
-    return {
-      syncedIds: [],
-      error: formatSupabaseWriteError(
-        error.message,
-        'work_schedules',
-        'Không thể chuyển dữ liệu lịch làm việc sang Supabase.'
-      ),
-    };
+  for (let i = 0; i < rows.length; i += 200) {
+    const chunk = rows.slice(i, i + 200);
+    let { error } = await client
+      .from('work_schedules')
+      .upsert(chunk, { onConflict: 'id' });
+
+    if (error && isMissingColumnError(error.message)) {
+      const legacyChunk = chunk.map((r) => ({
+        id: r.id,
+        owner_id: r.owner_id,
+        owner_email: r.owner_email,
+        employee_name: r.employee_name,
+        title: r.title,
+        work_date: r.work_date,
+        shift_type: r.shift_type,
+        start_time: r.start_time,
+        end_time: r.end_time,
+        location: r.location,
+        status: r.status,
+        note: r.note,
+        version: r.version,
+        updated_by: r.updated_by,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      }));
+      const retry = await client
+        .from('work_schedules')
+        .upsert(legacyChunk, { onConflict: 'id' });
+      error = retry.error;
+    }
+
+    if (error) {
+      return {
+        syncedIds: [],
+        error: formatSupabaseWriteError(
+          error.message,
+          'work_schedules',
+          'Không thể chuyển dữ liệu lịch làm việc sang Supabase.'
+        ),
+      };
+    }
   }
   return { syncedIds: schedules.map((w) => w.id) };
 }
