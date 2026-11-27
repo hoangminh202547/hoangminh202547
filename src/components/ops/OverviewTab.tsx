@@ -51,14 +51,14 @@ export function OverviewTab({
   const [summary, setSummary] = useState<OverviewSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const loadSummary = useCallback(async () => {
+  const loadSummary = useCallback(async (forceRefresh = false) => {
     if (!client) {
       setLoading(false);
       return;
     }
     setLoading(true);
     try {
-      const res = await fetchOverviewSummary(client, user.email);
+      const res = await fetchOverviewSummary(client, user.email, forceRefresh);
       setSummary(res);
     } finally {
       setLoading(false);
@@ -66,7 +66,7 @@ export function OverviewTab({
   }, [client, user.email]);
 
   useEffect(() => {
-    void loadSummary();
+    void loadSummary(false);
   }, [loadSummary]);
 
   useScopedRealtime(
@@ -74,7 +74,7 @@ export function OverviewTab({
     Boolean(client),
     ['work_schedules', 'attendance_logs', 'customer_feedbacks', 'expiry_tracking', 'return_records'],
     () => {
-      void loadSummary();
+      void loadSummary(false);
     }
   );
 
@@ -98,7 +98,7 @@ export function OverviewTab({
 
         <button
           type="button"
-          onClick={() => void loadSummary()}
+          onClick={() => void loadSummary(true)}
           disabled={loading || !client}
           className="min-h-[42px] px-4 py-2 inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap shrink-0"
         >

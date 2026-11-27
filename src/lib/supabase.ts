@@ -7,6 +7,7 @@ import {
 import schemaSql from '../../supabase/schema.sql?raw';
 import migration002Sql from '../../supabase/migrations/002_full_erp.sql?raw';
 import migration003Sql from '../../supabase/migrations/003_fix_rls_policies.sql?raw';
+import migration004Sql from '../../supabase/migrations/004_sync_and_schema_hardening.sql?raw';
 import type {
   ActivityAction,
   ActivityLog,
@@ -29,28 +30,61 @@ import { emailToKey, normalizeEmail, normalizeRole } from './permissions';
 export const SUPABASE_SCHEMA_SQL = schemaSql;
 export const SUPABASE_MIGRATION_002_SQL = migration002Sql;
 export const SUPABASE_MIGRATION_003_SQL = migration003Sql;
+export const SUPABASE_MIGRATION_004_SQL = migration004Sql;
+
+export const BARCODE_SCAN_COLUMNS =
+  'id,owner_id,owner_email,code,format,session_name,quantity,note,version,updated_by,scanned_at,updated_at';
+export const WORK_SCHEDULE_COLUMNS =
+  'id,owner_id,owner_email,employee_name,title,work_date,shift_type,shift_id,is_day_off,override_approved,override_reason,start_time,end_time,location,status,note,approved_by,approved_at,version,updated_by,created_at,updated_at';
+export const USER_ACCESS_COLUMNS =
+  'id,email,display_name,role,active,scope_all,barcode_view,barcode_create,barcode_edit,barcode_delete,schedule_view,schedule_create,schedule_edit,schedule_delete,schedule_approve,allow_export,activity_view,allow_supabase,module_perms,note,granted_by,version,created_at,updated_at';
+export const ACTIVITY_LOG_COLUMNS =
+  'id,actor_id,actor_email,actor_name,actor_role,module,action,target_id,summary,changes,created_at';
 
 /**
- * In-memory storage adapter for Supabase Auth so auth tokens stay strictly
- * in JS memory and are never persisted to localStorage or sessionStorage.
+ * Persistent storage adapter for Supabase Auth (1-time login across reloads & tabs)
+ * using browser localStorage with automatic in-memory fallback when restricted
+ * (e.g. strict iFrame / private mode).
  */
-class MemoryAuthStorage {
-  private store = new Map<string, string>();
+class PersistentAuthStorage {
+  private memoryFallback = new Map<string, string>();
 
   getItem(key: string): string | null {
-    return this.store.get(key) ?? null;
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const val = window.localStorage.getItem(key);
+        if (val !== null) return val;
+      }
+    } catch {
+      // Fallback to memory storage when localStorage is unavailable
+    }
+    return this.memoryFallback.get(key) ?? null;
   }
 
   setItem(key: string, value: string): void {
-    this.store.set(key, value);
+    this.memoryFallback.set(key, value);
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(key, value);
+      }
+    } catch {
+      // Non-fatal in sandboxed contexts
+    }
   }
 
   removeItem(key: string): void {
-    this.store.delete(key);
+    this.memoryFallback.delete(key);
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem(key);
+      }
+    } catch {
+      // Non-fatal
+    }
   }
 }
 
-const sharedMemoryStorage = new MemoryAuthStorage();
+const sharedAuthStorage = new PersistentAuthStorage();
 
 let cachedClientKey = '';
 let cachedClient: SupabaseClient | null = null;
@@ -374,7 +408,7 @@ export function getSupabaseClient(
   cachedClientKey = key;
   cachedClient = createClient(cleanUrl, cleanKey, {
     auth: {
-      storage: sharedMemoryStorage,
+      storage: sharedAuthStorage,
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: false,
@@ -1356,6 +1390,9 @@ export function formatSupabaseWriteError(
 ): string {
   const msg = (rawMessage || '').trim();
   if (!msg) return fallbackMessage;
+  if (/could not find the ['"]?([a-z0-9_]+)['"]? column/i.test(msg)) {
+    return `Bảng "${tableName}" trên Supabase đang thiếu cột (${msg}). Hãy chạy script SQL 004_sync_and_schema_hardening.sql trong Supabase SQL Editor để bổ sung cột an toàn (không mất dữ liệu cũ).`;
+  }
   if (
     /row-level security policy/i.test(msg) ||
     /permission denied for table/i.test(msg)
@@ -1392,7 +1429,7 @@ export async function fetchMyAccessFromSupabase(
 ): Promise<{ access: AuthorizedEmail | null; error?: string }> {
   const { data, error } = await client
     .from('user_access')
-    .select('*')
+    .select(USER_ACCESS_COLUMNS)
     .eq('email', normalizeEmail(email))
     .maybeSingle();
 
@@ -1414,25 +1451,28 @@ export async function fetchAllSyncedData(
   const [scanRes, schedRes, accessRes, logRes] = await Promise.all([
     client
       .from('barcode_scans')
-      .select('*')
-      .order('updated_at', { ascending: false }),
+      .select(BARCODE_SCAN_COLUMNS)
+      .order('updated_at', { ascending: false })
+      .limit(1500),
     client
       .from('work_schedules')
-      .select('*')
+      .select(WORK_SCHEDULE_COLUMNS)
       .order('work_date', { ascending: true })
-      .order('start_time', { ascending: true }),
+      .order('start_time', { ascending: true })
+      .limit(1500),
     options.isStoreManager
       ? client
           .from('user_access')
-          .select('*')
+          .select(USER_ACCESS_COLUMNS)
           .order('email', { ascending: true })
+          .limit(500)
       : Promise.resolve({ data: [], error: null }),
     options.allowActivity
       ? client
           .from('activity_logs')
-          .select('*')
+          .select(ACTIVITY_LOG_COLUMNS)
           .order('created_at', { ascending: false })
-          .limit(200)
+          .limit(100)
       : Promise.resolve({ data: [], error: null }),
   ]);
 
@@ -2023,6 +2063,7 @@ export interface RealtimeHandlers {
     oldId: string | null
   ) => void;
   onActivityInsert: (row: ActivityLog) => void;
+  onReferenceDataChange?: (table: 'shift_definitions' | 'system_settings') => void;
   onBroadcastEvent?: (payload: {
     event: string;
     senderEmail?: string;
@@ -2042,7 +2083,7 @@ export function createRealtimeSyncSession(
   client: SupabaseClient,
   handlers: RealtimeHandlers
 ): RealtimeSubscriptionHandle {
-  // Single Postgres Changes channel for all 4 operational tables
+  // Single Postgres Changes channel for all core + reference tables (1 WebSocket channel total)
   const dbChannel: RealtimeChannel = client
     .channel('tpcn-db-realtime-sync')
     .on(
@@ -2102,6 +2143,20 @@ export function createRealtimeSyncSession(
             mapActivityRow(payload.new as Record<string, unknown>)
           );
         }
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'shift_definitions' },
+      () => {
+        handlers.onReferenceDataChange?.('shift_definitions');
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'system_settings' },
+      () => {
+        handlers.onReferenceDataChange?.('system_settings');
       }
     )
     .subscribe((status) => {
@@ -2217,6 +2272,10 @@ export async function pushSchedulesToSupabase(
       title: w.title,
       work_date: w.workDate,
       shift_type: w.shiftType,
+      shift_id: w.shiftId ?? null,
+      is_day_off: Boolean(w.isDayOff),
+      override_approved: Boolean(w.overrideApproved),
+      override_reason: w.overrideReason || '',
       start_time: w.startTime,
       end_time: w.endTime,
       location: w.location || '',

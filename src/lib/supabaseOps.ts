@@ -1,5 +1,5 @@
 import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { appCache } from './cache';
 import { normalizeEmail } from './permissions';
 import { formatSupabaseWriteError, requireAuthenticatedSession } from './supabase';
@@ -41,17 +41,85 @@ export function subscribeClientDbOps(fn: (count: number) => void): () => void {
 }
 
 // ============================================================================
-// Scoped Realtime Hook (Subscribes ONLY when module is active, unsubscribes on leave)
+// Scoped Realtime Cache Invalidation + Hook (Debounced + Tab-Visibility Aware)
 // ============================================================================
+export function invalidateCacheForTable(table: string): void {
+  switch (table) {
+    case 'product_catalog':
+      appCache.invalidatePrefix('catalog:');
+      appCache.invalidatePrefix('overview:');
+      break;
+    case 'supplier_policies':
+      appCache.invalidatePrefix('policies:');
+      break;
+    case 'shift_definitions':
+      appCache.invalidatePrefix('shifts:');
+      break;
+    case 'system_settings':
+      appCache.invalidatePrefix('settings:');
+      break;
+    case 'user_profiles':
+      appCache.invalidatePrefix('profiles:');
+      break;
+    case 'work_schedules':
+    case 'attendance_logs':
+    case 'customer_feedbacks':
+    case 'expiry_tracking':
+    case 'return_records':
+    case 'promotions':
+      appCache.invalidatePrefix('overview:');
+      break;
+    default:
+      break;
+  }
+}
+
 export function useScopedRealtime(
   client: SupabaseClient | null,
   enabled: boolean,
   tables: string[],
-  onChange: () => void
+  onChange: () => void,
+  debounceMs = 450
 ) {
   const tablesKey = tables.join(',');
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
   useEffect(() => {
     if (!client || !enabled || tables.length === 0) return;
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let pendingWhileHidden = false;
+
+    const triggerRefresh = () => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        pendingWhileHidden = true;
+        return;
+      }
+      pendingWhileHidden = false;
+      onChangeRef.current();
+    };
+
+    const scheduleRefresh = (table: string) => {
+      invalidateCacheForTable(table);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        triggerRefresh();
+      }, debounceMs);
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document !== 'undefined' && !document.hidden && pendingWhileHidden) {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        triggerRefresh();
+      }
+    };
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
 
     const channelName = `scoped-${tablesKey}-${Math.random().toString(36).slice(2, 7)}`;
     let channel: RealtimeChannel = client.channel(channelName);
@@ -60,17 +128,21 @@ export function useScopedRealtime(
         'postgres_changes',
         { event: '*', schema: 'public', table },
         () => {
-          onChange();
+          scheduleRefresh(table);
         }
       );
     }
     channel.subscribe();
 
     return () => {
+      if (timer) clearTimeout(timer);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
       void client.removeChannel(channel);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, enabled, tablesKey]);
+  }, [client, enabled, tablesKey, debounceMs]);
 }
 
 // ============================================================================
@@ -253,8 +325,16 @@ export interface OverviewSummary {
 
 export async function fetchOverviewSummary(
   client: SupabaseClient,
-  email: string
+  email: string,
+  forceRefresh = false
 ): Promise<OverviewSummary> {
+  const cleanEmail = normalizeEmail(email);
+  const cacheKey = `overview:${cleanEmail}`;
+  if (!forceRefresh) {
+    const cached = appCache.get<OverviewSummary>(cacheKey);
+    if (cached) return cached;
+  }
+
   const today = new Date();
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(
     today.getDate()
@@ -264,7 +344,6 @@ export async function fetchOverviewSummary(
   const thresholdStr = `${in30Days.getFullYear()}-${String(in30Days.getMonth() + 1).padStart(2, '0')}-${String(
     in30Days.getDate()
   ).padStart(2, '0')}`;
-  const cleanEmail = normalizeEmail(email);
 
   recordClientDbOp(6);
   const [schedRes, attRes, myFbRes, teamFbRes, expRes, retRes, promoRes] = await Promise.all([
@@ -305,7 +384,7 @@ export async function fetchOverviewSummary(
       .eq('status', 'active'),
   ]);
 
-  return {
+  const summary: OverviewSummary = {
     todayDate: todayStr,
     myTodaySchedules: (schedRes.data || []).map((r) => ({
       id: String(r.id),
@@ -329,22 +408,31 @@ export async function fetchOverviewSummary(
     processingReturnsCount: retRes.count ?? 0,
     activePromosCount: promoRes.count ?? 0,
   };
+  appCache.set(cacheKey, summary, 20_000);
+  return summary;
 }
 
 // ============================================================================
 // Staff Profiles (Nhân sự)
 // ============================================================================
 export async function fetchUserProfiles(
-  client: SupabaseClient
+  client: SupabaseClient,
+  forceRefresh = false
 ): Promise<UserProfileRecord[]> {
+  if (!forceRefresh) {
+    const cached = appCache.get<UserProfileRecord[]>('profiles:all');
+    if (cached) return cached;
+  }
+
   recordClientDbOp();
   const { data, error } = await client
     .from('user_profiles')
     .select('id,email,display_name,avatar_url,avatar_path,birth_date,gender,phone,updated_at')
-    .order('display_name', { ascending: true });
+    .order('display_name', { ascending: true })
+    .limit(500);
 
   if (error || !data) return [];
-  return data.map((r) => ({
+  const mapped = data.map((r) => ({
     id: String(r.id),
     email: normalizeEmail(String(r.email || '')),
     displayName: String(r.display_name || ''),
@@ -355,6 +443,8 @@ export async function fetchUserProfiles(
     phone: String(r.phone || ''),
     updatedAt: r.updated_at ? String(r.updated_at) : null,
   }));
+  appCache.set('profiles:all', mapped, 60_000);
+  return mapped;
 }
 
 export async function updateMyProfileDetails(
@@ -397,6 +487,7 @@ export async function updateMyProfileDetails(
       ),
     };
   }
+  appCache.invalidatePrefix('profiles:');
   return {};
 }
 

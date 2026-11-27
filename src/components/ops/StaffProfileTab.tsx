@@ -7,6 +7,7 @@ import {
   fetchUserProfiles,
   updateMyProfileDetails,
   uploadMediaPairToStorage,
+  useScopedRealtime,
 } from '../../lib/supabaseOps';
 import type {
   AuthenticatedUser,
@@ -44,13 +45,13 @@ export function StaffProfileTab({
   const [saving, setSaving] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
-  const loadProfiles = useCallback(async () => {
+  const loadProfiles = useCallback(async (forceRefresh = false) => {
     if (!client) {
       setLoading(false);
       return;
     }
     setLoading(true);
-    const list = await fetchUserProfiles(client);
+    const list = await fetchUserProfiles(client, forceRefresh);
     setProfiles(list);
     const mine = list.find(
       (p) => p.id === user.uid || p.email.toLowerCase() === user.email.toLowerCase()
@@ -68,6 +69,15 @@ export function StaffProfileTab({
   useEffect(() => {
     void loadProfiles();
   }, [loadProfiles]);
+
+  useScopedRealtime(
+    client,
+    Boolean(client),
+    ['user_profiles'],
+    () => {
+      void loadProfiles(true);
+    }
+  );
 
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -103,7 +113,7 @@ export function StaffProfileTab({
         onNotify('error', saveRes.error);
       } else {
         onNotify('success', 'Đã nén WebP và cập nhật ảnh đại diện.');
-        void loadProfiles();
+        void loadProfiles(true);
       }
     } catch (err) {
       onNotify(
@@ -139,7 +149,7 @@ export function StaffProfileTab({
     }
     onProfileUpdated(displayName.trim());
     onNotify('success', 'Đã lưu hồ sơ nhân sự cá nhân.');
-    void loadProfiles();
+    void loadProfiles(true);
   };
 
   const directoryRows = useMemo(() => {

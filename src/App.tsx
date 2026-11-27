@@ -58,6 +58,7 @@ import { ConflictDialog } from './components/ConflictDialog';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SignInScreen } from './components/SignInScreen';
 import { SyncStatusBadge } from './components/SyncStatusBadge';
+import { appCache } from './lib/cache';
 import {
   OperationType,
   auth,
@@ -549,6 +550,11 @@ function MainApp() {
     return null;
   }, [supabaseSession, firebaseUser, customDisplayName]);
 
+  const currentUserUid = currentUser?.uid || '';
+  const currentUserEmail = currentUser?.email || '';
+  const currentUserRef = useRef<AuthenticatedUser | null>(currentUser);
+  currentUserRef.current = currentUser;
+
   const [runtimeConfigChecked, setRuntimeConfigChecked] = useState(false);
 
   const authReady =
@@ -626,6 +632,13 @@ function MainApp() {
 
   const realtimeRef = useRef<RealtimeSubscriptionHandle | null>(null);
   const prevChannelDisconnectedRef = useRef(false);
+  const syncedProfileUidRef = useRef<string | null>(null);
+  const hydrateInFlightRef = useRef<Promise<void> | null>(null);
+  const lastKnownAccessMetaRef = useRef<{
+    role: string;
+    scopeAll: boolean;
+    activityView: boolean;
+  } | null>(null);
 
   const notify = useCallback(
     (type: ToastMessage['type'], message: string) => {
@@ -745,8 +758,24 @@ function MainApp() {
       }
     });
 
+    // Cross-tab Supabase Auth sync: signing in or out in one tab immediately updates others
+    const handleStorageSync = (e: StorageEvent) => {
+      if (!mounted || !e.key || !e.key.startsWith('sb-')) return;
+      void supabaseClient.auth
+        .getSession()
+        .then(({ data }) => {
+          if (mounted) {
+            setSupabaseSession(data.session ?? null);
+            setSupabaseAuthReady(true);
+          }
+        })
+        .catch(() => {});
+    };
+    window.addEventListener('storage', handleStorageSync);
+
     return () => {
       mounted = false;
+      window.removeEventListener('storage', handleStorageSync);
       sub.subscription.unsubscribe();
     };
   }, [supabaseClient, runtimeConfigChecked]);
@@ -856,7 +885,9 @@ function MainApp() {
   }, [firebaseUser, runtimeConfigChecked, reportFirestoreError]);
 
   useEffect(() => {
-    if (!currentUser) {
+    if (!currentUserUid) {
+      syncedProfileUidRef.current = null;
+      lastKnownAccessMetaRef.current = null;
       setCustomDisplayName(null);
       setAccessChecked(false);
       setAccessDeactivated(false);
@@ -890,37 +921,48 @@ function MainApp() {
       setActivityLogs([]);
       setSyncState('disconnected');
     }
-  }, [currentUser]);
+  }, [currentUserUid]);
 
   // ============================================================================
   // Access Resolution (Supabase DB OR Firestore)
   // ============================================================================
   const refreshSupabaseAccess = useCallback(async () => {
-    if (!supabaseClient || !currentUser || backendMode !== 'supabase') return;
-    try {
-      await upsertUserProfile(supabaseClient, {
-        uid: currentUser.uid,
-        email: currentUser.email,
-        displayName: currentUser.displayName,
-        photoURL: currentUser.photoURL,
-      });
-    } catch {
-      // Non-fatal
+    const activeUser = currentUserRef.current;
+    if (!supabaseClient || !activeUser || !activeUser.email || backendMode !== 'supabase') {
+      return;
     }
-    const res = await fetchMyAccessFromSupabase(supabaseClient, currentUser.email);
-    const resolved = buildEffectivePermissions(currentUser.email, res.access);
+    if (syncedProfileUidRef.current !== activeUser.uid) {
+      try {
+        await upsertUserProfile(supabaseClient, {
+          uid: activeUser.uid,
+          email: activeUser.email,
+          displayName: activeUser.displayName,
+          photoURL: activeUser.photoURL,
+        });
+        syncedProfileUidRef.current = activeUser.uid;
+      } catch {
+        // Non-fatal
+      }
+    }
+    const res = await fetchMyAccessFromSupabase(supabaseClient, activeUser.email);
+    const resolved = buildEffectivePermissions(activeUser.email, res.access);
+    lastKnownAccessMetaRef.current = {
+      role: resolved.permissions.role,
+      scopeAll: resolved.permissions.scopeAll,
+      activityView: resolved.permissions.activityView,
+    };
     setPermissions(resolved.permissions);
     setAccessDeactivated(resolved.deactivated);
     setAccessChecked(true);
-  }, [supabaseClient, currentUser, backendMode]);
+  }, [supabaseClient, currentUserUid, currentUserEmail, backendMode]);
 
   useEffect(() => {
-    if (!currentUser || !currentUser.email) return;
+    if (!currentUserUid || !currentUserEmail) return;
 
     if (backendMode === 'supabase') {
       setAccessChecked(false);
       void refreshSupabaseAccess().catch(() => {
-        const resolved = buildEffectivePermissions(currentUser.email, null);
+        const resolved = buildEffectivePermissions(currentUserEmail, null);
         setPermissions(resolved.permissions);
         setAccessDeactivated(resolved.deactivated);
         setAccessChecked(true);
@@ -928,7 +970,7 @@ function MainApp() {
       return;
     }
 
-    const cleanEmail = normalizeEmail(currentUser.email);
+    const cleanEmail = normalizeEmail(currentUserEmail);
     if (cleanEmail === SUPER_ADMIN_EMAIL) {
       const resolved = buildEffectivePermissions(cleanEmail, null);
       setPermissions(resolved.permissions);
@@ -1004,7 +1046,7 @@ function MainApp() {
     );
 
     return () => unsub();
-  }, [currentUser, backendMode, refreshSupabaseAccess, reportFirestoreError]);
+  }, [currentUserUid, currentUserEmail, backendMode, refreshSupabaseAccess, reportFirestoreError]);
 
   const handleRecheckAccess = useCallback(async () => {
     if (!currentUser?.email) return;
@@ -1051,65 +1093,87 @@ function MainApp() {
   // ============================================================================
   // Supabase Reference & Primary Hydration + Realtime Sync
   // ============================================================================
-  const refreshShiftsAndRules = useCallback(async () => {
-    if (!supabaseClient || backendMode !== 'supabase') return;
-    try {
-      const [rules, shiftList] = await Promise.all([
-        fetchLeaveRules(supabaseClient),
-        fetchShiftDefinitions(supabaseClient),
-      ]);
-      setLeaveRules(rules);
-      if (shiftList.length > 0) {
-        setShifts(shiftList);
+  const refreshShiftsAndRules = useCallback(
+    async (forceRefresh = false) => {
+      if (!supabaseClient || backendMode !== 'supabase') return;
+      if (forceRefresh) {
+        appCache.invalidatePrefix('settings:');
+        appCache.invalidatePrefix('shifts:');
       }
-    } catch {
-      // Fall back to default shifts if migration 002 hasn't been executed yet
-    }
-  }, [supabaseClient, backendMode]);
+      try {
+        const [rules, shiftList] = await Promise.all([
+          fetchLeaveRules(supabaseClient),
+          fetchShiftDefinitions(supabaseClient),
+        ]);
+        setLeaveRules(rules);
+        if (shiftList.length > 0) {
+          setShifts(shiftList);
+        }
+      } catch {
+        // Fall back to default shifts if migration 002 hasn't been executed yet
+      }
+    },
+    [supabaseClient, backendMode]
+  );
 
   const hydrateSupabaseData = useCallback(async () => {
-    if (!supabaseClient || !currentUser || !permissions.authorized) return;
-    setSyncState('syncing');
-    setScansLoading(true);
-    setSchedulesLoading(true);
-    if (permissions.role === 'store_manager') setMembersLoading(true);
-    if (permissions.activityView) setActivityLoading(true);
+    if (!supabaseClient || !currentUserUid || !permissions.authorized) return;
+    if (hydrateInFlightRef.current) {
+      return hydrateInFlightRef.current;
+    }
 
-    const [res] = await Promise.all([
-      fetchAllSyncedData(supabaseClient, {
-        isStoreManager: permissions.role === 'store_manager',
-        allowActivity: permissions.activityView,
-      }),
-      refreshShiftsAndRules(),
-    ]);
+    const run = (async () => {
+      setSyncState('syncing');
+      setScansLoading(true);
+      setSchedulesLoading(true);
+      if (permissions.role === 'store_manager') setMembersLoading(true);
+      if (permissions.activityView) setActivityLoading(true);
 
-    if (res.error) {
-      setSyncState('error');
+      const [res] = await Promise.all([
+        fetchAllSyncedData(supabaseClient, {
+          isStoreManager: permissions.role === 'store_manager',
+          allowActivity: permissions.activityView,
+        }),
+        refreshShiftsAndRules(false),
+      ]);
+
+      if (res.error) {
+        setSyncState('error');
+        setScansLoading(false);
+        setSchedulesLoading(false);
+        setMembersLoading(false);
+        setActivityLoading(false);
+        notify('error', `Lỗi đồng bộ Supabase: ${res.error}`);
+        return;
+      }
+
+      setScans(res.scans);
+      setSchedules(res.schedules);
+      if (permissions.role === 'store_manager') {
+        setAuthorizedMembers(res.members);
+      }
+      if (permissions.activityView) {
+        setActivityLogs(res.logs);
+      }
       setScansLoading(false);
       setSchedulesLoading(false);
       setMembersLoading(false);
       setActivityLoading(false);
-      notify('error', `Lỗi đồng bộ Supabase: ${res.error}`);
-      return;
-    }
+      setLastSyncedAt(new Date().toISOString());
+      setSyncState('synced');
+    })();
 
-    setScans(res.scans);
-    setSchedules(res.schedules);
-    if (permissions.role === 'store_manager') {
-      setAuthorizedMembers(res.members);
+    hydrateInFlightRef.current = run;
+    try {
+      await run;
+    } finally {
+      if (hydrateInFlightRef.current === run) {
+        hydrateInFlightRef.current = null;
+      }
     }
-    if (permissions.activityView) {
-      setActivityLogs(res.logs);
-    }
-    setScansLoading(false);
-    setSchedulesLoading(false);
-    setMembersLoading(false);
-    setActivityLoading(false);
-    setLastSyncedAt(new Date().toISOString());
-    setSyncState('synced');
   }, [
     supabaseClient,
-    currentUser,
+    currentUserUid,
     permissions.authorized,
     permissions.role,
     permissions.activityView,
@@ -1121,7 +1185,7 @@ function MainApp() {
     if (
       backendMode !== 'supabase' ||
       !supabaseClient ||
-      !currentUser ||
+      !currentUserUid ||
       !permissions.authorized
     ) {
       if (realtimeRef.current) {
@@ -1202,15 +1266,29 @@ function MainApp() {
         }
         if (
           newRow &&
-          normalizeEmail(newRow.email) === normalizeEmail(currentUser.email)
+          normalizeEmail(newRow.email) === normalizeEmail(currentUserEmail)
         ) {
-          const resolved = buildEffectivePermissions(currentUser.email, newRow);
+          const resolved = buildEffectivePermissions(currentUserEmail, newRow);
+          const prevMeta = lastKnownAccessMetaRef.current;
+          const scopeChanged =
+            !prevMeta ||
+            prevMeta.role !== resolved.permissions.role ||
+            prevMeta.scopeAll !== resolved.permissions.scopeAll ||
+            prevMeta.activityView !== resolved.permissions.activityView;
+          lastKnownAccessMetaRef.current = {
+            role: resolved.permissions.role,
+            scopeAll: resolved.permissions.scopeAll,
+            activityView: resolved.permissions.activityView,
+          };
           setPermissions(resolved.permissions);
           setAccessDeactivated(resolved.deactivated);
           notify('info', 'Quyền truy cập của bạn vừa được cập nhật theo thời gian thực.');
+          if (scopeChanged && resolved.permissions.authorized) {
+            void hydrateSupabaseData();
+          }
         } else if (
           eventType === 'DELETE' &&
-          oldId === emailToKey(currentUser.email)
+          oldId === emailToKey(currentUserEmail)
         ) {
           void refreshSupabaseAccess();
         }
@@ -1225,9 +1303,16 @@ function MainApp() {
         });
       },
 
+      onReferenceDataChange: (table) => {
+        if (cancelled) return;
+        appCache.invalidatePrefix(table === 'shift_definitions' ? 'shifts:' : 'settings:');
+        void refreshShiftsAndRules(true);
+      },
+
       onBroadcastEvent: (payload) => {
         if (cancelled) return;
         if (payload.event === 'FORCE_RESYNC') {
+          appCache.clear();
           void hydrateSupabaseData();
         }
       },
@@ -1279,12 +1364,14 @@ function MainApp() {
   }, [
     backendMode,
     supabaseClient,
-    currentUser,
+    currentUserUid,
+    currentUserEmail,
     permissions.authorized,
     permissions.role,
     permissions.activityView,
     hydrateSupabaseData,
     refreshSupabaseAccess,
+    refreshShiftsAndRules,
     notify,
   ]);
 
@@ -2415,6 +2502,7 @@ function MainApp() {
     if (backendMode === 'supabase') {
       setIsSyncing(true);
       try {
+        appCache.clear();
         await hydrateSupabaseData();
         notify('success', 'Đã đồng bộ lại dữ liệu mới nhất từ Supabase.');
       } finally {
