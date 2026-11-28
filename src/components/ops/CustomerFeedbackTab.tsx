@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { exportCustomerFeedbackToExcel } from '../../lib/excel';
 import { compressImageToWebP } from '../../lib/media';
-import { formatViDate, formatYmd, getWeekBoundsYmd, parseYmd } from '../../lib/scheduleMeta';
+import { formatViDate, formatViDateTime, formatYmd, getWeekBoundsYmd, parseYmd } from '../../lib/scheduleMeta';
 import {
   createCustomerFeedback,
   deleteCustomerFeedback,
@@ -577,10 +577,7 @@ export function CustomerFeedbackTab({
                         <span className="font-bold text-slate-900">{item.employeeName}</span>
                         <span className="text-slate-400">·</span>
                         <span className="font-mono text-slate-500 tabular-nums">
-                          {new Intl.DateTimeFormat('vi-VN', {
-                            dateStyle: 'short',
-                            timeStyle: 'short',
-                          }).format(new Date(item.createdAt))}
+                          {formatViDateTime(item.createdAt, false)}
                         </span>
                         <span
                           className={`px-2 py-0.5 rounded font-medium ${

@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import { formatBytes } from '../../lib/media';
+import { formatViDate } from '../../lib/scheduleMeta';
 import {
   STORAGE_BUCKET,
   createSignedMediaUrl,
@@ -355,8 +356,8 @@ export function StorageManagerTab({
                           <span className="text-amber-700 font-medium">Không còn tham chiếu</span>
                         )}
                       </td>
-                      <td className="py-2.5 px-3 font-mono text-xs text-slate-500 tabular-nums">
-                        {f.createdAt ? f.createdAt.slice(0, 10) : '—'}
+                      <td className="py-2.5 px-3 font-mono text-xs text-slate-500 tabular-nums whitespace-nowrap">
+                        {formatViDate(f.createdAt)}
                       </td>
                       <td className="py-2.5 px-3 text-right">
                         {f.category === 'image' && (
@@ -424,7 +425,7 @@ export function StorageManagerTab({
                   </div>
                   <div className="rounded-lg bg-slate-50 p-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
                     <span className="uppercase font-semibold text-slate-700">
-                      {f.category} · {formatBytes(f.sizeBytes)}
+                      {f.category} · {formatBytes(f.sizeBytes)} · {formatViDate(f.createdAt)}
                     </span>
                     <span className={isReferenced ? 'text-emerald-700 font-semibold' : 'text-amber-700 font-semibold'}>
                       {isReferenced ? 'Đang dùng (bảo vệ)' : 'Không còn tham chiếu'}

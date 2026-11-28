@@ -45,6 +45,7 @@ import {
   type SupabaseAuthSettings,
   type SupabaseConnectionTestResult,
 } from '../lib/supabase';
+import { formatViDateTime } from '../lib/scheduleMeta';
 import type {
   DataBackendMode,
   SupabaseConfig,
@@ -56,6 +57,81 @@ import type {
 } from '../types';
 import { ConfirmDialog } from './ConfirmDialog';
 import { SyncStatusBadge } from './SyncStatusBadge';
+
+type SqlVersionKey =
+  | 'retention_007'
+  | 'timeout_fix'
+  | 'attendance_fix'
+  | 'schema_sync'
+  | 'rls_fix'
+  | 'migration'
+  | 'base';
+
+const SQL_VERSION_OPTIONS: Array<{
+  id: SqlVersionKey;
+  version: string;
+  fileName: string;
+  title: string;
+  scope: string;
+  badge: string;
+}> = [
+  {
+    id: 'retention_007',
+    version: 'v007',
+    fileName: '007_ops_enhancements_and_log_retention.sql',
+    title: 'Lưu nhật ký 60 ngày & tối ưu kho dữ liệu',
+    scope: 'Trigger dọn log > 60 ngày, tối ưu truy vấn kho dữ liệu',
+    badge: 'Mới nhất',
+  },
+  {
+    id: 'timeout_fix',
+    version: 'v006',
+    fileName: '006_query_optimization_and_timeout_fix.sql',
+    title: 'Tối ưu chỉ mục & khắc phục statement timeout',
+    scope: 'Index tìm kiếm nhanh, tối ưu RLS chống nghẽn truy vấn',
+    badge: 'Khuyến nghị',
+  },
+  {
+    id: 'attendance_fix',
+    version: 'v005',
+    fileName: '005_attendance_and_updates.sql',
+    title: 'Mở khóa điều chỉnh/xóa chấm công & Clear giờ',
+    scope: 'Cập nhật RLS chấm công, trạng thái tăng ca / về sớm / clear giờ',
+    badge: 'Vận hành',
+  },
+  {
+    id: 'schema_sync',
+    version: 'v004',
+    fileName: '004_sync_and_schema_hardening.sql',
+    title: 'Bổ sung cột version & bật Realtime',
+    scope: 'Khắc phục thiếu cột barcode_scans.version, cấu hình publication',
+    badge: 'Đồng bộ',
+  },
+  {
+    id: 'rls_fix',
+    version: 'v003',
+    fileName: '003_fix_rls_policies.sql',
+    title: 'Chuẩn hóa chính sách bảo mật RLS',
+    scope: 'Đồng bộ quyền đọc/ghi theo email phân quyền',
+    badge: 'Bảo mật',
+  },
+  {
+    id: 'migration',
+    version: 'v002',
+    fileName: '002_full_erp.sql',
+    title: 'Mở rộng toàn bộ bảng ERP & Storage',
+    scope: 'Chấm công, HSD, Đổi trả, Khuyến mãi, Kho dữ liệu, Storage',
+    badge: 'ERP',
+  },
+  {
+    id: 'base',
+    version: 'v001',
+    fileName: 'schema.sql',
+    title: 'Schema khởi tạo gốc',
+    scope: 'Tạo bảng cốt lõi ban đầu khi cài đặt project Supabase mới',
+    badge: 'Cài mới',
+  },
+];
 
 const CONFIG_SOURCE_LABELS: Record<SupabaseConfigSource, string> = {
   env_build: 'Biến môi trường Build (VITE_SUPABASE_*)',
@@ -154,9 +230,7 @@ export function SupabasePanel({
     useState<SupabaseConfig | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
   const [showSql, setShowSql] = useState(false);
-  const [sqlTab, setSqlTab] = useState<'retention_007' | 'timeout_fix' | 'attendance_fix' | 'schema_sync' | 'rls_fix' | 'migration' | 'base'>(
-    'retention_007'
-  );
+  const [sqlTab, setSqlTab] = useState<SqlVersionKey>('retention_007');
 
   // In-app Supabase Auth activation state
   const [authMethod, setAuthMethod] = useState<'otp' | 'password' | 'google'>(
@@ -568,9 +642,9 @@ export function SupabasePanel({
             </div>
             <div className="bg-white border border-slate-200 rounded-lg px-3 py-2">
               <p className="text-slate-500">Kiểm tra gần nhất</p>
-              <p className="font-medium text-slate-900 mt-0.5">
+              <p className="font-medium text-slate-900 mt-0.5 tabular-nums">
                 {testResult?.checkedAt
-                  ? new Date(testResult.checkedAt).toLocaleString('vi-VN')
+                  ? formatViDateTime(testResult.checkedAt, true)
                   : 'Chưa chạy kiểm tra'}
               </p>
             </div>
@@ -1235,111 +1309,226 @@ export function SupabasePanel({
         </div>
       )}
 
-      {/* SQL Schema Helper */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5 sm:p-6">
+      {/* SQL Schema & Migration Selector Table */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
-            <h3 className="text-base font-bold text-slate-900">
+            <h3 className="text-base font-semibold tracking-tight text-slate-900">
               SQL Schema &amp; Nâng cấp Database (RLS, Trigger, Storage, Realtime)
             </h3>
             <p className="mt-1 text-sm text-slate-600">
-              Chạy <span className="font-mono text-xs">schema.sql</span> khi cài mới,{' '}
-              <span className="font-mono text-xs">002_full_erp.sql</span> cho bảng ERP,{' '}
-              <span className="font-mono text-xs">003_fix_rls_policies.sql</span> để đồng bộ RLS,{' '}
-              <span className="font-mono text-xs">004_sync_and_schema_hardening.sql</span> để bổ sung cột thiếu &amp; Realtime và{' '}
-              <span className="font-mono text-xs">005_attendance_and_updates.sql</span> để mở khóa điều chỉnh/xóa chấm công &amp; Clear giờ và{' '}
-              <span className="font-mono text-xs">006_query_optimization_and_timeout_fix.sql</span> để bổ sung chỉ mục tìm kiếm, tối ưu RLS &amp; khắc phục timeout, và{' '}
-              <span className="font-mono text-xs">007_ops_enhancements_and_log_retention.sql</span> để tự động lưu nhật ký 60 ngày gần nhất &amp; tối ưu kho dữ liệu.
+              Chọn phiên bản SQL trong bảng bên dưới để xem nội dung hoặc sao chép dán vào Supabase SQL Editor.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <div className="inline-flex flex-wrap p-1 bg-slate-100 rounded-lg">
-              <button
-                type="button"
-                onClick={() => setSqlTab('retention_007')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md ${
-                  sqlTab === 'retention_007' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-                }`}
-              >
-                007_ops_enhancements_and_log_retention.sql (Mới nhất)
-              </button>
-              <button
-                type="button"
-                onClick={() => setSqlTab('timeout_fix')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md ${
-                  sqlTab === 'timeout_fix' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-                }`}
-              >
-                006_query_optimization_and_timeout_fix.sql (Tối ưu &amp; Fix Timeout)
-              </button>
-              <button
-                type="button"
-                onClick={() => setSqlTab('attendance_fix')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md ${
-                  sqlTab === 'attendance_fix' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-                }`}
-              >
-                005_attendance_and_updates.sql (Chấm công)
-              </button>
-              <button
-                type="button"
-                onClick={() => setSqlTab('schema_sync')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md ${
-                  sqlTab === 'schema_sync' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-                }`}
-              >
-                004_sync_and_schema_hardening.sql (Cột thiếu &amp; Realtime)
-              </button>
-              <button
-                type="button"
-                onClick={() => setSqlTab('rls_fix')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md ${
-                  sqlTab === 'rls_fix' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-                }`}
-              >
-                003_fix_rls_policies.sql (Sửa RLS)
-              </button>
-              <button
-                type="button"
-                onClick={() => setSqlTab('migration')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md ${
-                  sqlTab === 'migration' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-                }`}
-              >
-                002_full_erp.sql (Mở rộng)
-              </button>
-              <button
-                type="button"
-                onClick={() => setSqlTab('base')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md ${
-                  sqlTab === 'base' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-                }`}
-              >
-                schema.sql (Gốc)
-              </button>
-            </div>
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={handleCopySql}
-              className="min-h-[42px] inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap"
+              className="min-h-[42px] inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap"
             >
               <Copy className="h-4 w-4" />
-              <span>{copiedSql ? 'Đã sao chép SQL' : 'Sao chép SQL'}</span>
+              <span>{copiedSql ? 'Đã sao chép SQL' : 'Sao chép SQL đang chọn'}</span>
             </button>
             <button
               type="button"
               onClick={() => setShowSql((v) => !v)}
-              className="min-h-[42px] px-4 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 rounded-lg transition-colors whitespace-nowrap"
+              className="min-h-[42px] px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap"
             >
-              {showSql ? 'Ẩn SQL' : 'Xem SQL'}
+              {showSql ? 'Ẩn mã SQL' : 'Xem mã SQL'}
             </button>
           </div>
         </div>
 
+        {/* Desktop SQL Version Table */}
+        <div className="hidden md:block overflow-x-auto border border-slate-200 rounded-lg">
+          <table className="w-full text-left border-collapse text-sm">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
+                <th className="py-2.5 px-3 w-12">Chọn</th>
+                <th className="py-2.5 px-3">Phiên bản</th>
+                <th className="py-2.5 px-3">Tệp SQL</th>
+                <th className="py-2.5 px-3">Nội dung nâng cấp</th>
+                <th className="py-2.5 px-3 text-right">Thao tác</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {SQL_VERSION_OPTIONS.map((opt) => {
+                const selected = sqlTab === opt.id;
+                return (
+                  <tr
+                    key={opt.id}
+                    onClick={() => setSqlTab(opt.id)}
+                    className={`cursor-pointer transition-colors ${
+                      selected ? 'bg-blue-50/70' : 'hover:bg-slate-50'
+                    }`}
+                  >
+                    <td className="py-2.5 px-3">
+                      <input
+                        type="radio"
+                        name="sql-version-desktop"
+                        checked={selected}
+                        onChange={() => setSqlTab(opt.id)}
+                        aria-label={`Chọn ${opt.fileName}`}
+                        className="h-4 w-4 text-blue-600 border-slate-300"
+                      />
+                    </td>
+                    <td className="py-2.5 px-3 whitespace-nowrap">
+                      <span className="font-mono text-xs font-bold text-slate-900 tabular-nums">
+                        {opt.version}
+                      </span>
+                      <span className="ml-1.5 text-xs font-medium text-blue-700">
+                        · {opt.badge}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
+                      {opt.fileName}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <p className="text-xs font-semibold text-slate-900">{opt.title}</p>
+                      <p className="text-xs text-slate-600">{opt.scope}</p>
+                    </td>
+                    <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSqlTab(opt.id);
+                            setShowSql(true);
+                          }}
+                          className="min-h-[34px] px-2.5 py-1 rounded-md border border-slate-300 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                        >
+                          Xem
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSqlTab(opt.id);
+                            const scriptMap: Record<SqlVersionKey, string> = {
+                              retention_007: SUPABASE_MIGRATION_007_SQL,
+                              timeout_fix: SUPABASE_MIGRATION_006_SQL,
+                              attendance_fix: SUPABASE_MIGRATION_005_SQL,
+                              schema_sync: SUPABASE_MIGRATION_004_SQL,
+                              rls_fix: SUPABASE_MIGRATION_003_SQL,
+                              migration: SUPABASE_MIGRATION_002_SQL,
+                              base: SUPABASE_SCHEMA_SQL,
+                            };
+                            void navigator.clipboard.writeText(scriptMap[opt.id]).then(() => {
+                              setCopiedSql(true);
+                              onNotify?.('success', `Đã sao chép ${opt.fileName}`);
+                              setTimeout(() => setCopiedSql(false), 2500);
+                            });
+                          }}
+                          className="min-h-[34px] px-2.5 py-1 rounded-md border border-blue-200 bg-blue-50 text-xs font-medium text-blue-700 hover:bg-blue-100 whitespace-nowrap"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Mobile Portrait Vertical Selector Cards */}
+        <div className="md:hidden space-y-2">
+          {SQL_VERSION_OPTIONS.map((opt) => {
+            const selected = sqlTab === opt.id;
+            return (
+              <div
+                key={opt.id}
+                onClick={() => setSqlTab(opt.id)}
+                className={`rounded-xl border p-3.5 space-y-2 transition-colors ${
+                  selected
+                    ? 'border-blue-500 bg-blue-50/70'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <label className="flex items-center gap-2 min-w-0 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="sql-version-mobile"
+                      checked={selected}
+                      onChange={() => setSqlTab(opt.id)}
+                      className="h-4 w-4 text-blue-600 shrink-0"
+                    />
+                    <span className="font-mono text-xs font-bold text-slate-900 tabular-nums">
+                      {opt.version}
+                    </span>
+                    <span className="text-xs font-semibold text-blue-700">
+                      {opt.badge}
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSqlTab(opt.id);
+                        setShowSql(true);
+                      }}
+                      className="min-h-[36px] px-2.5 py-1 rounded-lg border border-slate-300 bg-white text-xs font-medium text-slate-700 whitespace-nowrap"
+                    >
+                      Xem
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSqlTab(opt.id);
+                        const scriptMap: Record<SqlVersionKey, string> = {
+                          retention_007: SUPABASE_MIGRATION_007_SQL,
+                          timeout_fix: SUPABASE_MIGRATION_006_SQL,
+                          attendance_fix: SUPABASE_MIGRATION_005_SQL,
+                          schema_sync: SUPABASE_MIGRATION_004_SQL,
+                          rls_fix: SUPABASE_MIGRATION_003_SQL,
+                          migration: SUPABASE_MIGRATION_002_SQL,
+                          base: SUPABASE_SCHEMA_SQL,
+                        };
+                        void navigator.clipboard.writeText(scriptMap[opt.id]).then(() => {
+                          setCopiedSql(true);
+                          onNotify?.('success', `Đã sao chép ${opt.fileName}`);
+                          setTimeout(() => setCopiedSql(false), 2500);
+                        });
+                      }}
+                      className="min-h-[36px] px-2.5 py-1 rounded-lg border border-blue-200 bg-blue-50 text-xs font-medium text-blue-700 whitespace-nowrap"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                </div>
+                <p className="font-mono text-xs font-semibold text-slate-800 break-all">
+                  {opt.fileName}
+                </p>
+                <p className="text-sm font-semibold text-slate-900">{opt.title}</p>
+                <p className="text-xs text-slate-600">{opt.scope}</p>
+              </div>
+            );
+          })}
+        </div>
+
         {showSql && (
-          <pre className="mt-4 p-4 bg-slate-900 text-slate-100 rounded-lg text-xs font-mono overflow-x-auto leading-relaxed max-h-[460px]">
-            {activeSqlScript}
-          </pre>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2 text-xs text-slate-600">
+              <span className="font-mono font-semibold text-slate-900">
+                Đang xem: {SQL_VERSION_OPTIONS.find((o) => o.id === sqlTab)?.fileName}
+              </span>
+              <button
+                type="button"
+                onClick={handleCopySql}
+                className="text-xs font-semibold text-blue-600 hover:underline whitespace-nowrap"
+              >
+                {copiedSql ? 'Đã sao chép' : 'Sao chép toàn bộ'}
+              </button>
+            </div>
+            <pre className="p-4 bg-slate-900 text-slate-100 rounded-lg text-xs font-mono overflow-x-auto leading-relaxed max-h-[460px]">
+              {activeSqlScript}
+            </pre>
+          </div>
         )}
       </div>
 

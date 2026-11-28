@@ -16,18 +16,19 @@ import type {
   WorkSchedule,
 } from '../types';
 
+import { formatViDate } from './scheduleMeta';
+
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
-  return new Intl.DateTimeFormat('vi-VN', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(d);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${dd}/${mm}/${yyyy} ${hh}:${min}:${ss}`;
 }
 
 const HEADER_STYLE = {
@@ -247,7 +248,7 @@ export async function exportSchedulesToExcel(
 
   const rows: Row[] = schedules.map((item, idx) => [
     { type: Number, value: idx + 1 },
-    { type: String, value: item.workDate },
+    { type: String, value: formatViDate(item.workDate) },
     { type: String, value: item.title },
     { type: String, value: item.employeeName },
     { type: String, value: item.isDayOff ? 'Nghỉ DO' : SHIFT_LABELS[item.shiftType] || item.shiftType },
@@ -330,7 +331,7 @@ export async function exportAttendanceToExcel(records: AttendanceRecord[]): Prom
 
   const rows: Row[] = records.map((item, idx) => [
     { type: Number, value: idx + 1 },
-    { type: String, value: item.workDate },
+    { type: String, value: formatViDate(item.workDate) },
     { type: String, value: item.employeeName },
     { type: String, value: item.ownerEmail },
     { type: String, value: item.shiftName },
@@ -374,7 +375,7 @@ export async function exportCustomerFeedbackToExcel(
 
   const rows: Row[] = items.map((item, idx) => [
     { type: Number, value: idx + 1 },
-    { type: String, value: item.feedbackDate },
+    { type: String, value: formatViDate(item.feedbackDate) },
     { type: String, value: formatDateTime(item.createdAt) },
     { type: String, value: item.employeeName },
     { type: String, value: item.ownerEmail },
@@ -542,8 +543,8 @@ export async function downloadExpiryTemplate(): Promise<string> {
     { type: String, value: '8935001234567' },
     { type: String, value: 'Viên uống Vitamin C 500mg' },
     { type: String, value: 'Hộp' },
-    { type: String, value: '2025-01-15' },
-    { type: String, value: '2027-01-15' },
+    { type: String, value: '15/01/2025' },
+    { type: String, value: '15/01/2027' },
     { type: String, value: 'Đổi trả trước HSD 3 tháng' },
     { type: String, value: 'Quầy kệ 1' },
     { type: String, value: 'PT01' },
@@ -580,7 +581,10 @@ export async function exportExpiryToExcel(items: ExpiryTrackingItem[]): Promise<
       if (Number.isFinite(expMs)) {
         const deadlineMs = expMs - months * 30 * 86_400_000;
         const daysToNotify = Math.ceil((deadlineMs - todayMs) / 86_400_000);
-        const deadlineStr = new Intl.DateTimeFormat('vi-VN').format(new Date(deadlineMs));
+        const deadlineDt = new Date(deadlineMs);
+        const deadlineStr = `${String(deadlineDt.getDate()).padStart(2, '0')}/${String(
+          deadlineDt.getMonth() + 1
+        ).padStart(2, '0')}/${deadlineDt.getFullYear()}`;
         noticeStatus =
           daysToNotify < 0
             ? `Quá hạn báo NCC ${Math.abs(daysToNotify)} ngày (Hạn ${deadlineStr})`
@@ -596,8 +600,8 @@ export async function exportExpiryToExcel(items: ExpiryTrackingItem[]): Promise<
       { type: String, value: item.barcode },
       { type: String, value: item.productName },
       { type: String, value: item.unit },
-      { type: String, value: item.mfgDate },
-      { type: String, value: item.expDate },
+      { type: String, value: item.mfgDate ? formatViDate(item.mfgDate) : '' },
+      { type: String, value: item.expDate ? formatViDate(item.expDate) : '' },
       { type: String, value: item.returnPolicy },
       { type: String, value: noticeStatus },
       { type: String, value: item.note },
@@ -634,8 +638,8 @@ export async function exportReturnsToExcel(items: ReturnRecordItem[]): Promise<s
     { type: String, value: item.productSummary },
     { type: String, value: item.returnMethod },
     { type: String, value: item.progress === 'completed' ? 'Đã xử lý' : 'Đang xử lý' },
-    { type: String, value: item.completedDate },
-    { type: String, value: item.reportedDate },
+    { type: String, value: item.completedDate ? formatViDate(item.completedDate) : '' },
+    { type: String, value: item.reportedDate ? formatViDate(item.reportedDate) : '' },
     { type: String, value: item.lastUpdateNote },
   ]);
   const fileName = `DoiTraHangHoa_${new Date().toISOString().slice(0, 10)}.xlsx`;
@@ -669,7 +673,7 @@ export async function downloadPromotionTemplate(): Promise<string> {
     { type: String, value: '8935001234567' },
     { type: String, value: 'Viên uống Vitamin C 500mg (B)' },
     { type: String, value: 'Hộp' },
-    { type: String, value: '2026-12-31' },
+    { type: String, value: '31/12/2026' },
     { type: Number, value: 12 },
     { type: Number, value: 20 },
     { type: Number, value: 150000 },
@@ -706,7 +710,7 @@ export async function exportPromotionsToExcel(items: PromotionItem[]): Promise<s
     { type: String, value: item.productName },
     { type: String, value: item.hasBBadge ? 'B' : '' },
     { type: String, value: item.unit },
-    { type: String, value: item.expDate },
+    { type: String, value: item.expDate ? formatViDate(item.expDate) : '' },
     { type: Number, value: item.quantity },
     { type: Number, value: item.discountRate },
     { type: Number, value: item.regularPrice },

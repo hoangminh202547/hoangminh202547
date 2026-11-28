@@ -1394,8 +1394,142 @@ export async function batchDeleteCatalogWithCheck(
       }
     }
     appCache.invalidatePrefix('catalog:');
+    appCache.invalidatePrefix('overview:');
   }
   return { deleted: deletableIds.length, blockedCodes };
+}
+
+export async function deleteAllCatalogWithCheck(
+  client: SupabaseClient
+): Promise<{ deleted: number; blockedCodes: string[]; error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { deleted: 0, blockedCodes: [], error: authCheck.error };
+
+  const allItems: Array<{ id: string; productCode: string }> = [];
+  const seenIds = new Set<string>();
+  let pageSize = 1000;
+  let offset = 0;
+
+  while (true) {
+    recordClientDbOp();
+    const { data, error } = await client
+      .from('product_catalog')
+      .select('id,product_code')
+      .order('id', { ascending: true })
+      .range(offset, offset + pageSize - 1);
+
+    if (error) {
+      if (isStatementTimeoutError(error.message) && pageSize > 100) {
+        pageSize = Math.max(100, Math.floor(pageSize / 4));
+        continue;
+      }
+      return {
+        deleted: 0,
+        blockedCodes: [],
+        error: formatSupabaseReadError(error.message, 'Danh mục hàng'),
+      };
+    }
+
+    const batch = (data || []) as Array<Record<string, unknown>>;
+    for (const row of batch) {
+      const id = String(row.id || '');
+      if (!id || seenIds.has(id)) continue;
+      seenIds.add(id);
+      allItems.push({
+        id,
+        productCode: String(row.product_code || ''),
+      });
+    }
+
+    if (batch.length < pageSize) break;
+    offset += batch.length;
+  }
+
+  if (allItems.length === 0) {
+    return { deleted: 0, blockedCodes: [] };
+  }
+
+  const uniqueCodes = Array.from(
+    new Set(allItems.map((i) => i.productCode).filter(Boolean))
+  );
+  const inUseSet = new Set<string>();
+  let refChunkSize = 100;
+  let refIdx = 0;
+
+  while (refIdx < uniqueCodes.length) {
+    const codeChunk = uniqueCodes.slice(refIdx, refIdx + refChunkSize);
+    recordClientDbOp(2);
+    const [expRef, promoRef] = await Promise.all([
+      client.from('expiry_tracking').select('product_code').in('product_code', codeChunk),
+      client.from('promotions').select('product_code').in('product_code', codeChunk),
+    ]);
+
+    const refError = expRef.error || promoRef.error;
+    if (refError) {
+      if (isStatementTimeoutError(refError.message) && refChunkSize > 25) {
+        refChunkSize = 25;
+        continue;
+      }
+      return {
+        deleted: 0,
+        blockedCodes: [],
+        error: formatSupabaseReadError(refError.message, 'Kiểm tra liên kết danh mục'),
+      };
+    }
+
+    for (const r of expRef.data || []) inUseSet.add(String(r.product_code));
+    for (const r of promoRef.data || []) inUseSet.add(String(r.product_code));
+    refIdx += codeChunk.length;
+  }
+
+  const deletableIds = allItems
+    .filter((i) => !inUseSet.has(i.productCode))
+    .map((i) => i.id);
+  const blockedCodes = Array.from(
+    new Set(
+      allItems
+        .filter((i) => inUseSet.has(i.productCode))
+        .map((i) => i.productCode)
+        .filter(Boolean)
+    )
+  );
+
+  let deleted = 0;
+  let delChunkSize = 100;
+  let delIdx = 0;
+
+  while (delIdx < deletableIds.length) {
+    const idChunk = deletableIds.slice(delIdx, delIdx + delChunkSize);
+    recordClientDbOp();
+    const { error } = await client.from('product_catalog').delete().in('id', idChunk);
+    if (error) {
+      if (isStatementTimeoutError(error.message) && delChunkSize > 25) {
+        delChunkSize = 25;
+        continue;
+      }
+      if (deleted > 0) {
+        appCache.invalidatePrefix('catalog:');
+        appCache.invalidatePrefix('overview:');
+      }
+      return {
+        deleted,
+        blockedCodes,
+        error: formatSupabaseWriteError(
+          error.message,
+          'product_catalog',
+          'Không thể xóa toàn bộ danh mục hàng.'
+        ),
+      };
+    }
+    deleted += idChunk.length;
+    delIdx += idChunk.length;
+  }
+
+  if (deleted > 0) {
+    appCache.invalidatePrefix('catalog:');
+    appCache.invalidatePrefix('overview:');
+  }
+  return { deleted, blockedCodes };
 }
 
 function mapPolicy(r: Record<string, unknown>): SupplierPolicyItem {
@@ -1542,6 +1676,87 @@ export async function deletePoliciesBatch(
   }
   appCache.invalidatePrefix('policies:');
   return {};
+}
+
+export async function deleteAllSupplierPolicies(
+  client: SupabaseClient
+): Promise<{ deleted: number; error?: string }> {
+  const authCheck = await requireAuthenticatedSession(client);
+  if (!authCheck.ok) return { deleted: 0, error: authCheck.error };
+
+  const allIds: string[] = [];
+  const seenIds = new Set<string>();
+  let pageSize = 1000;
+  let offset = 0;
+
+  while (true) {
+    recordClientDbOp();
+    const { data, error } = await client
+      .from('supplier_policies')
+      .select('id')
+      .order('id', { ascending: true })
+      .range(offset, offset + pageSize - 1);
+
+    if (error) {
+      if (isStatementTimeoutError(error.message) && pageSize > 100) {
+        pageSize = Math.max(100, Math.floor(pageSize / 4));
+        continue;
+      }
+      return {
+        deleted: 0,
+        error: formatSupabaseReadError(error.message, 'Chính sách đổi trả NCC'),
+      };
+    }
+
+    const batch = (data || []) as Array<Record<string, unknown>>;
+    for (const row of batch) {
+      const id = String(row.id || '');
+      if (!id || seenIds.has(id)) continue;
+      seenIds.add(id);
+      allIds.push(id);
+    }
+
+    if (batch.length < pageSize) break;
+    offset += batch.length;
+  }
+
+  if (allIds.length === 0) {
+    return { deleted: 0 };
+  }
+
+  let deleted = 0;
+  let delChunkSize = 100;
+  let delIdx = 0;
+
+  while (delIdx < allIds.length) {
+    const idChunk = allIds.slice(delIdx, delIdx + delChunkSize);
+    recordClientDbOp();
+    const { error } = await client.from('supplier_policies').delete().in('id', idChunk);
+    if (error) {
+      if (isStatementTimeoutError(error.message) && delChunkSize > 25) {
+        delChunkSize = 25;
+        continue;
+      }
+      if (deleted > 0) {
+        appCache.invalidatePrefix('policies:');
+      }
+      return {
+        deleted,
+        error: formatSupabaseWriteError(
+          error.message,
+          'supplier_policies',
+          'Không thể xóa toàn bộ chính sách đổi trả NCC.'
+        ),
+      };
+    }
+    deleted += idChunk.length;
+    delIdx += idChunk.length;
+  }
+
+  if (deleted > 0) {
+    appCache.invalidatePrefix('policies:');
+  }
+  return { deleted };
 }
 
 export interface WarehouseUpdateEntry {
@@ -2191,21 +2406,28 @@ export async function listAllStorageObjectsRecursive(
 export async function getReferencedStoragePaths(
   client: SupabaseClient
 ): Promise<Set<string>> {
-  recordClientDbOp(2);
-  const [profilesRes, fbRes] = await Promise.all([
+  recordClientDbOp(3);
+  const [profilesRes, fbMainRes, fbThumbRes] = await Promise.all([
     client.from('user_profiles').select('avatar_path').neq('avatar_path', '').limit(2000),
     client
       .from('customer_feedbacks')
-      .select('image_path,image_thumb_path')
-      .or('image_path.neq.,image_thumb_path.neq.')
+      .select('image_path')
+      .neq('image_path', '')
+      .limit(5000),
+    client
+      .from('customer_feedbacks')
+      .select('image_thumb_path')
+      .neq('image_thumb_path', '')
       .limit(5000),
   ]);
   const refs = new Set<string>();
   for (const p of profilesRes.data || []) {
     if (p.avatar_path) refs.add(String(p.avatar_path));
   }
-  for (const f of fbRes.data || []) {
+  for (const f of fbMainRes.data || []) {
     if (f.image_path) refs.add(String(f.image_path));
+  }
+  for (const f of fbThumbRes.data || []) {
     if (f.image_thumb_path) refs.add(String(f.image_thumb_path));
   }
   return refs;

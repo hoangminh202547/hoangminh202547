@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangle, RefreshCw, ShieldAlert, X } from 'lucide-react';
+import { formatViDateTime } from '../lib/scheduleMeta';
 import type { EditConflict } from '../types';
 
 interface ConflictDialogProps {
@@ -13,13 +14,7 @@ export function ConflictDialog({ conflict, onClose }: ConflictDialogProps) {
   if (!conflict) return null;
 
   const formattedTime = conflict.serverUpdatedAt
-    ? new Intl.DateTimeFormat('vi-VN', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        day: '2-digit',
-        month: '2-digit',
-      }).format(new Date(conflict.serverUpdatedAt))
+    ? formatViDateTime(conflict.serverUpdatedAt, true)
     : 'Vừa xong';
 
   const handleReload = () => {

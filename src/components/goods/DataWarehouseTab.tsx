@@ -23,8 +23,11 @@ import {
   readExcelSheetRows,
 } from '../../lib/excel';
 import { extractNoticeMonthsFromPolicy } from '../../lib/permissions';
+import { formatViDateTime } from '../../lib/scheduleMeta';
 import {
   batchDeleteCatalogWithCheck,
+  deleteAllCatalogWithCheck,
+  deleteAllSupplierPolicies,
   deletePoliciesBatch,
   fetchAllCatalogForCache,
   fetchAllPoliciesForCache,
@@ -58,31 +61,37 @@ interface DataWarehouseTabProps {
   ) => void;
 }
 
+interface CatalogUpdateDiff {
+  item: Omit<ProductCatalogItem, 'createdAt' | 'updatedAt'>;
+  prevPrice: number;
+  prevSupplier: string;
+  priceChanged: boolean;
+  supplierChanged: boolean;
+}
+
 interface CatalogImportPreview {
+  fileName: string;
   toInsert: Array<Omit<ProductCatalogItem, 'id' | 'createdAt' | 'updatedAt'>>;
-  toUpdate: Array<Omit<ProductCatalogItem, 'createdAt' | 'updatedAt'>>;
+  toUpdate: CatalogUpdateDiff[];
   skippedCount: number;
   errors: string[];
 }
 
+interface PolicyUpdateDiff {
+  item: Omit<SupplierPolicyItem, 'createdAt' | 'updatedAt'>;
+  prevReturnPolicy: string;
+}
+
 interface PolicyImportPreview {
+  fileName: string;
   toInsert: Array<Omit<SupplierPolicyItem, 'id' | 'createdAt' | 'updatedAt'>>;
-  toUpdate: Array<Omit<SupplierPolicyItem, 'createdAt' | 'updatedAt'>>;
+  toUpdate: PolicyUpdateDiff[];
   skippedCount: number;
   errors: string[];
 }
 
 function formatDateTimeVi(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return new Intl.DateTimeFormat('vi-VN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  }).format(d);
+  return formatViDateTime(iso, false);
 }
 
 export function DataWarehouseTab({
@@ -136,6 +145,10 @@ export function DataWarehouseTab({
   const [polImportPreview, setPolImportPreview] = useState<PolicyImportPreview | null>(null);
 
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState<'catalog' | 'policies' | null>(
+    null
+  );
+  const [deletingAll, setDeletingAll] = useState(false);
   const [importing, setImporting] = useState(false);
 
   const loadRecentUpdates = useCallback(async () => {
@@ -318,7 +331,93 @@ export function DataWarehouseTab({
     setConfirmBatchDelete(false);
   };
 
-  // Excel import parsing + diff preview
+  // Delete all items in active tab
+  const handleConfirmDeleteAll = async () => {
+    if (!client || !confirmDeleteAll) return;
+    const target = confirmDeleteAll;
+    setDeletingAll(true);
+    try {
+      if (target === 'catalog') {
+        const res = await deleteAllCatalogWithCheck(client);
+        if (res.error) {
+          onNotify('error', res.error);
+          if (res.deleted > 0) {
+            setSelectedCatIds(new Set());
+            setPage(1);
+            void loadData();
+            void loadRecentUpdates();
+          }
+          return;
+        }
+        setSelectedCatIds(new Set());
+        setCatImportPreview(null);
+        setPage(1);
+        if (res.blockedCodes.length > 0) {
+          const sample = res.blockedCodes.slice(0, 6).join(', ');
+          const extra =
+            res.blockedCodes.length > 6
+              ? ` và ${res.blockedCodes.length - 6} mã khác`
+              : '';
+          onNotify(
+            'info',
+            res.deleted > 0
+              ? `Đã xóa ${res.deleted} mặt hàng. Giữ lại ${res.blockedCodes.length} mã (${sample}${extra}) đang liên kết với Hạn sử dụng hoặc Khuyến mãi.`
+              : `Không thể xóa ${res.blockedCodes.length} mã (${sample}${extra}) vì đang được dùng ở Hạn sử dụng hoặc Khuyến mãi.`
+          );
+        } else {
+          onNotify(
+            'success',
+            res.deleted > 0
+              ? `Đã xóa toàn bộ ${res.deleted} mặt hàng khỏi danh mục.`
+              : 'Danh mục hàng hiện đang trống.'
+          );
+        }
+        if (res.deleted > 0) {
+          const msg =
+            res.blockedCodes.length > 0
+              ? `Đã xóa ${res.deleted} mã hàng khỏi danh mục (giữ lại ${res.blockedCodes.length} mã đang liên kết HSD/KM).`
+              : `Đã xóa toàn bộ ${res.deleted} mã hàng khỏi danh mục hiện tại.`;
+          setSessionUpdateBanner(msg);
+          onLogActivity('delete', 'catalog_all', msg);
+        }
+        void loadData();
+        void loadRecentUpdates();
+      } else {
+        const res = await deleteAllSupplierPolicies(client);
+        if (res.error) {
+          onNotify('error', res.error);
+          if (res.deleted > 0) {
+            setSelectedPolIds(new Set());
+            setPage(1);
+            void loadData();
+            void loadRecentUpdates();
+          }
+          return;
+        }
+        setSelectedPolIds(new Set());
+        setPolImportPreview(null);
+        setPage(1);
+        onNotify(
+          'success',
+          res.deleted > 0
+            ? `Đã xóa toàn bộ ${res.deleted} chính sách đổi trả NCC.`
+            : 'Danh sách chính sách đổi trả NCC hiện đang trống.'
+        );
+        if (res.deleted > 0) {
+          const msg = `Đã xóa toàn bộ ${res.deleted} chính sách đổi trả NCC hiện tại.`;
+          setSessionUpdateBanner(msg);
+          onLogActivity('delete', 'policies_all', msg);
+        }
+        void loadData();
+        void loadRecentUpdates();
+      }
+    } finally {
+      setDeletingAll(false);
+      setConfirmDeleteAll(null);
+    }
+  };
+
+  // Excel smart filter parsing + diff preview
   const handleUploadExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -366,38 +465,50 @@ export function DataWarehouseTab({
               updatedBy: user.email,
             });
           } else {
-            const changed =
-              existing.barcode !== barcode ||
-              existing.name !== name ||
-              existing.unit !== unit ||
-              existing.price !== price ||
-              existing.supplierName !== supplierName;
-            if (changed) {
+            const priceChanged = existing.price !== price;
+            const supplierChanged =
+              existing.supplierName.trim() !== supplierName.trim();
+            if (priceChanged || supplierChanged) {
               toUpdate.push({
-                id: existing.id,
-                productCode: code,
-                barcode,
-                name,
-                unit,
-                price,
-                supplierName,
-                updatedBy: user.email,
+                item: {
+                  id: existing.id,
+                  productCode: code,
+                  barcode: barcode || existing.barcode,
+                  name: name || existing.name,
+                  unit: unit || existing.unit,
+                  price,
+                  supplierName,
+                  updatedBy: user.email,
+                },
+                prevPrice: existing.price,
+                prevSupplier: existing.supplierName,
+                priceChanged,
+                supplierChanged,
               });
             } else {
+              // Skip rows whose price and supplier did not change to reduce write load
               skippedCount += 1;
             }
           }
         });
-        setCatImportPreview({ toInsert, toUpdate, skippedCount, errors });
+        setCatImportPreview({
+          fileName: file.name,
+          toInsert,
+          toUpdate,
+          skippedCount,
+          errors,
+        });
       } else {
         const existingAll = await fetchAllPoliciesForCache(client);
-        const existingMap = new Map<string, SupplierPolicyItem>();
-        existingAll.forEach((p) =>
-          existingMap.set(
-            `${p.supplierSystemName.toLowerCase()}__${p.productName.toLowerCase()}`,
-            p
-          )
-        );
+        const existingExactMap = new Map<string, SupplierPolicyItem>();
+        const existingBySystemMap = new Map<string, SupplierPolicyItem[]>();
+        existingAll.forEach((p) => {
+          const sysKey = p.supplierSystemName.toLowerCase();
+          existingExactMap.set(`${sysKey}__${p.productName.toLowerCase()}`, p);
+          const arr = existingBySystemMap.get(sysKey) || [];
+          arr.push(p);
+          existingBySystemMap.set(sysKey, arr);
+        });
 
         const toInsert: PolicyImportPreview['toInsert'] = [];
         const toUpdate: PolicyImportPreview['toUpdate'] = [];
@@ -415,11 +526,16 @@ export function DataWarehouseTab({
             extractNoticeMonthsFromPolicy(returnPolicy, legacyColMonths);
 
           if (!supplierSystemName || !returnPolicy) {
-            errors.push(`Dòng ${idx + 2}: Thiếu Tên NCC HT hoặc Chính sách đổi trả SP.`);
+            errors.push(`Dòng ${idx + 2}: Thiếu Tên NCC HT hoặc Đổi trả SP.`);
             return;
           }
-          const key = `${supplierSystemName.toLowerCase()}__${productName.toLowerCase()}`;
-          const existing = existingMap.get(key);
+          const sysKey = supplierSystemName.toLowerCase();
+          const exactKey = `${sysKey}__${productName.toLowerCase()}`;
+          const bySysList = existingBySystemMap.get(sysKey) || [];
+          const existing =
+            existingExactMap.get(exactKey) ||
+            (bySysList.length === 1 ? bySysList[0] : undefined);
+
           if (!existing) {
             toInsert.push({
               category,
@@ -431,28 +547,35 @@ export function DataWarehouseTab({
               updatedBy: user.email,
             });
           } else {
-            const changed =
-              existing.category !== category ||
-              existing.supplierName !== supplierName ||
-              existing.returnPolicy !== returnPolicy ||
-              existing.warnMonthsBefore !== warnMonthsBefore;
-            if (changed) {
+            const policyChanged =
+              existing.returnPolicy.trim() !== returnPolicy.trim();
+            if (policyChanged) {
               toUpdate.push({
-                id: existing.id,
-                category,
-                supplierName,
-                supplierSystemName,
-                productName,
-                returnPolicy,
-                warnMonthsBefore,
-                updatedBy: user.email,
+                item: {
+                  id: existing.id,
+                  category: category || existing.category,
+                  supplierName: supplierName || existing.supplierName,
+                  supplierSystemName,
+                  productName,
+                  returnPolicy,
+                  warnMonthsBefore,
+                  updatedBy: user.email,
+                },
+                prevReturnPolicy: existing.returnPolicy,
               });
             } else {
+              // Skip policies whose Đổi trả SP did not change for that Tên NCC HT
               skippedCount += 1;
             }
           }
         });
-        setPolImportPreview({ toInsert, toUpdate, skippedCount, errors });
+        setPolImportPreview({
+          fileName: file.name,
+          toInsert,
+          toUpdate,
+          skippedCount,
+          errors,
+        });
       }
     } catch (err) {
       onNotify(
@@ -466,13 +589,17 @@ export function DataWarehouseTab({
     if (!client || !catImportPreview) return;
     setImporting(true);
     let ok = 0;
-    for (const row of [...catImportPreview.toInsert, ...catImportPreview.toUpdate]) {
+    const rowsToSave = [
+      ...catImportPreview.toInsert,
+      ...catImportPreview.toUpdate.map((d) => d.item),
+    ];
+    for (const row of rowsToSave) {
       const res = await upsertCatalogItem(client, row);
       if (!res.error) ok += 1;
     }
     setImporting(false);
-    const summaryMsg = `Import danh mục hàng: +${catImportPreview.toInsert.length} mới, cập nhật ${catImportPreview.toUpdate.length} dòng (bỏ qua ${catImportPreview.skippedCount} dòng không đổi).`;
-    onNotify('success', `Import hoàn tất (${ok} bản ghi đã lưu).`);
+    const summaryMsg = `Cập nhật danh mục hàng mới: +${catImportPreview.toInsert.length} mã mới, cập nhật giá/NCC ${catImportPreview.toUpdate.length} mã (bỏ qua ${catImportPreview.skippedCount} mã không đổi).`;
+    onNotify('success', `Đã cập nhật danh mục hàng (${ok} bản ghi).`);
     onLogActivity('update', 'catalog_import', summaryMsg);
     setSessionUpdateBanner(summaryMsg);
     setUpdatesPanelOpen(true);
@@ -485,13 +612,17 @@ export function DataWarehouseTab({
     if (!client || !polImportPreview) return;
     setImporting(true);
     let ok = 0;
-    for (const row of [...polImportPreview.toInsert, ...polImportPreview.toUpdate]) {
+    const rowsToSave = [
+      ...polImportPreview.toInsert,
+      ...polImportPreview.toUpdate.map((d) => d.item),
+    ];
+    for (const row of rowsToSave) {
       const res = await upsertPolicyItem(client, row);
       if (!res.error) ok += 1;
     }
     setImporting(false);
-    const summaryMsg = `Import chính sách NCC: +${polImportPreview.toInsert.length} mới, cập nhật ${polImportPreview.toUpdate.length} dòng (bỏ qua ${polImportPreview.skippedCount}).`;
-    onNotify('success', `Import chính sách NCC hoàn tất (${ok} bản ghi).`);
+    const summaryMsg = `Cập nhật chính sách đổi trả: +${polImportPreview.toInsert.length} NCC mới, cập nhật Đổi trả SP ${polImportPreview.toUpdate.length} NCC (bỏ qua ${polImportPreview.skippedCount} dòng không đổi).`;
+    onNotify('success', `Đã cập nhật chính sách đổi trả (${ok} bản ghi).`);
     onLogActivity('update', 'policy_import', summaryMsg);
     setSessionUpdateBanner(summaryMsg);
     setUpdatesPanelOpen(true);
@@ -680,9 +811,13 @@ export function DataWarehouseTab({
           </button>
 
           {canEdit && (
-            <label className="min-h-[40px] px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer">
+            <label className="min-h-[40px] px-3.5 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-xs sm:text-sm font-medium text-blue-700 hover:bg-blue-100 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
               <Upload className="h-4 w-4 text-blue-600" />
-              <span>Import Excel</span>
+              <span>
+                {subTab === 'catalog'
+                  ? 'Cập nhật danh mục hàng mới'
+                  : 'Cập nhật chính sách đổi trả'}
+              </span>
               <input
                 type="file"
                 accept=".xlsx"
@@ -704,7 +839,7 @@ export function DataWarehouseTab({
                   onNotify('success', `Đã xuất ${f}`);
                 }
               }}
-              className="min-h-[40px] px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1.5"
+              className="min-h-[40px] px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1.5 whitespace-nowrap"
             >
               <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
               <span>Xuất Excel</span>
@@ -719,29 +854,58 @@ export function DataWarehouseTab({
                   ? setShowCatForm((v) => !v)
                   : setShowPolForm((v) => !v)
               }
-              className="min-h-[40px] px-3.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs sm:text-sm font-medium hover:bg-blue-700 inline-flex items-center gap-1.5"
+              className="min-h-[40px] px-3.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs sm:text-sm font-medium hover:bg-blue-700 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
               <Plus className="h-4 w-4" />
               <span>Thêm mới</span>
             </button>
           )}
+
+          {canEdit && subTab === 'catalog' && (
+            <button
+              type="button"
+              disabled={deletingAll || loading || catalogTotal === 0}
+              onClick={() => setConfirmDeleteAll('catalog')}
+              className="min-h-[40px] px-3.5 py-1.5 rounded-lg border border-red-200 bg-red-50 text-red-700 text-xs sm:text-sm font-medium hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <Trash2 className="h-4 w-4" />
+              <span>{deletingAll ? 'Đang xóa...' : 'Xóa toàn bộ danh mục'}</span>
+            </button>
+          )}
+
+          {canEdit && subTab === 'policies' && (
+            <button
+              type="button"
+              disabled={deletingAll || loading || policyTotal === 0}
+              onClick={() => setConfirmDeleteAll('policies')}
+              className="min-h-[40px] px-3.5 py-1.5 rounded-lg border border-red-200 bg-red-50 text-red-700 text-xs sm:text-sm font-medium hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <Trash2 className="h-4 w-4" />
+              <span>{deletingAll ? 'Đang xóa...' : 'Xóa toàn bộ chính sách NCC'}</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Excel Import Preview Drawer */}
+      {/* Smart Filter Preview Table — Catalog */}
       {subTab === 'catalog' && catImportPreview && (
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-sm font-bold text-blue-950">
-              Xem trước Import Danh mục hàng (chỉ ghi phần thay đổi, không xóa dòng vắng mặt)
-            </h4>
-            <div className="flex items-center gap-2">
+        <div className="bg-white border border-blue-300 rounded-xl overflow-hidden shadow-xs">
+          <div className="p-4 bg-blue-50/80 border-b border-blue-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h4 className="text-base font-semibold tracking-tight text-slate-900">
+                Bảng kết quả lọc thông minh — Cập nhật danh mục hàng mới
+              </h4>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Tệp: <span className="font-mono font-medium">{catImportPreview.fileName}</span> · Chỉ ghi mã hàng mới và mã đổi giá bán hoặc nhà cung cấp để giảm tải thời gian cập nhật.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => setCatImportPreview(null)}
-                className="px-3 py-1.5 rounded-lg border border-blue-300 bg-white text-xs font-medium text-slate-700"
+                className="min-h-[40px] px-3.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
               >
-                Hủy
+                Hủy bỏ
               </button>
               <button
                 type="button"
@@ -751,37 +915,223 @@ export function DataWarehouseTab({
                     catImportPreview.toUpdate.length === 0)
                 }
                 onClick={() => void applyCatalogImport()}
-                className="px-4 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+                className="min-h-[40px] px-4 py-1.5 rounded-lg bg-blue-600 text-white text-xs sm:text-sm font-medium hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
               >
-                {importing ? 'Đang import...' : 'Xác nhận áp dụng'}
+                {importing
+                  ? 'Đang cập nhật...'
+                  : `Xác nhận cập nhật (${catImportPreview.toInsert.length + catImportPreview.toUpdate.length})`}
               </button>
             </div>
           </div>
-          <p className="text-xs text-blue-900 tabular-nums">
-            Thêm mới: <strong>{catImportPreview.toInsert.length}</strong> · Cập nhật:{' '}
-            <strong>{catImportPreview.toUpdate.length}</strong> · Bỏ qua (không đổi):{' '}
-            <strong>{catImportPreview.skippedCount}</strong> · Lỗi:{' '}
-            <strong>{catImportPreview.errors.length}</strong>
-          </p>
-          {catImportPreview.errors.length > 0 && (
-            <p className="text-xs text-red-700">{catImportPreview.errors.slice(0, 3).join(' | ')}</p>
-          )}
+
+          <div className="p-4 space-y-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3">
+                <p className="text-xs font-medium text-emerald-800">Mã hàng mới</p>
+                <p className="text-xl font-bold text-emerald-900 tabular-nums mt-0.5">
+                  {catImportPreview.toInsert.length}
+                </p>
+              </div>
+              <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+                <p className="text-xs font-medium text-blue-800">Cập nhật giá / NCC</p>
+                <p className="text-xl font-bold text-blue-900 tabular-nums mt-0.5">
+                  {catImportPreview.toUpdate.length}
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs font-medium text-slate-600">Bỏ qua (không đổi)</p>
+                <p className="text-xl font-bold text-slate-800 tabular-nums mt-0.5">
+                  {catImportPreview.skippedCount}
+                </p>
+              </div>
+              <div className="rounded-lg border border-red-200 bg-red-50/60 p-3">
+                <p className="text-xs font-medium text-red-700">Dòng lỗi / thiếu mã</p>
+                <p className="text-xl font-bold text-red-800 tabular-nums mt-0.5">
+                  {catImportPreview.errors.length}
+                </p>
+              </div>
+            </div>
+
+            {catImportPreview.errors.length > 0 && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                {catImportPreview.errors.slice(0, 5).join(' | ')}
+              </div>
+            )}
+
+            {catImportPreview.toInsert.length === 0 &&
+            catImportPreview.toUpdate.length === 0 ? (
+              <p className="text-sm text-slate-600 text-center py-4">
+                Tất cả mã hàng trong tệp Excel đều trùng khớp giá bán và nhà cung cấp hiện tại — không cần ghi thêm dữ liệu.
+              </p>
+            ) : (
+              <>
+                <div className="hidden md:block overflow-x-auto border border-slate-200 rounded-lg max-h-96">
+                  <table className="w-full text-left border-collapse text-sm">
+                    <thead className="sticky top-0 bg-slate-50 z-10">
+                      <tr className="border-b border-slate-200 text-xs font-semibold text-slate-600">
+                        <th className="py-2.5 px-3">Trạng thái lọc</th>
+                        <th className="py-2.5 px-3">Mã hàng</th>
+                        <th className="py-2.5 px-3">Tên hàng</th>
+                        <th className="py-2.5 px-3">ĐVT</th>
+                        <th className="py-2.5 px-3 text-right">Giá bán (cũ → mới)</th>
+                        <th className="py-2.5 px-3">Nhà cung cấp (cũ → mới)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {catImportPreview.toInsert.map((row, idx) => (
+                        <tr key={`ins-${row.productCode}-${idx}`} className="bg-emerald-50/25">
+                          <td className="py-2 px-3 whitespace-nowrap">
+                            <span className="inline-block px-2 py-0.5 rounded border border-emerald-200 bg-emerald-50 text-xs font-semibold text-emerald-700">
+                              Thêm mới
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 font-mono text-xs font-bold text-slate-900">
+                            {row.productCode}
+                          </td>
+                          <td className="py-2 px-3 text-slate-900 font-medium">{row.name}</td>
+                          <td className="py-2 px-3 text-xs text-slate-600">{row.unit || '—'}</td>
+                          <td className="py-2 px-3 font-mono text-xs text-right tabular-nums font-bold text-emerald-700">
+                            {row.price.toLocaleString('vi-VN')} đ
+                          </td>
+                          <td className="py-2 px-3 text-xs text-slate-700">
+                            {row.supplierName || '—'}
+                          </td>
+                        </tr>
+                      ))}
+                      {catImportPreview.toUpdate.map((diff, idx) => (
+                        <tr key={`upd-${diff.item.productCode}-${idx}`} className="bg-blue-50/20">
+                          <td className="py-2 px-3 whitespace-nowrap">
+                            <span className="inline-block px-2 py-0.5 rounded border border-blue-200 bg-blue-50 text-xs font-semibold text-blue-700">
+                              {diff.priceChanged && diff.supplierChanged
+                                ? 'Đổi giá & NCC'
+                                : diff.priceChanged
+                                  ? 'Đổi giá bán'
+                                  : 'Đổi NCC'}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 font-mono text-xs font-bold text-slate-900">
+                            {diff.item.productCode}
+                          </td>
+                          <td className="py-2 px-3 text-slate-900 font-medium">{diff.item.name}</td>
+                          <td className="py-2 px-3 text-xs text-slate-600">{diff.item.unit || '—'}</td>
+                          <td className="py-2 px-3 font-mono text-xs text-right tabular-nums whitespace-nowrap">
+                            {diff.priceChanged ? (
+                              <>
+                                <span className="text-slate-400 line-through">
+                                  {diff.prevPrice.toLocaleString('vi-VN')}
+                                </span>{' '}
+                                <span className="font-bold text-blue-700">
+                                  → {diff.item.price.toLocaleString('vi-VN')} đ
+                                </span>
+                              </>
+                            ) : (
+                              <span className="text-slate-600">
+                                {diff.item.price.toLocaleString('vi-VN')} đ
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-xs">
+                            {diff.supplierChanged ? (
+                              <>
+                                <span className="text-slate-400 line-through">
+                                  {diff.prevSupplier || '—'}
+                                </span>{' '}
+                                <span className="font-semibold text-blue-700">
+                                  → {diff.item.supplierName || '—'}
+                                </span>
+                              </>
+                            ) : (
+                              <span className="text-slate-600">
+                                {diff.item.supplierName || '—'}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Mobile Portrait Smart Preview Cards */}
+                <div className="md:hidden divide-y divide-slate-200 border border-slate-200 rounded-lg max-h-96 overflow-y-auto">
+                  {catImportPreview.toInsert.map((row, idx) => (
+                    <div key={`m-ins-${row.productCode}-${idx}`} className="p-3 space-y-1 text-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-xs font-bold text-slate-900">
+                          {row.productCode}
+                        </span>
+                        <span className="px-2 py-0.5 rounded border border-emerald-200 bg-emerald-50 text-xs font-semibold text-emerald-700">
+                          Thêm mới
+                        </span>
+                      </div>
+                      <p className="font-medium text-slate-900">{row.name}</p>
+                      <p className="text-xs text-slate-700 tabular-nums">
+                        Giá: <strong>{row.price.toLocaleString('vi-VN')} đ</strong> · NCC:{' '}
+                        {row.supplierName || '—'}
+                      </p>
+                    </div>
+                  ))}
+                  {catImportPreview.toUpdate.map((diff, idx) => (
+                    <div key={`m-upd-${diff.item.productCode}-${idx}`} className="p-3 space-y-1 text-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-xs font-bold text-slate-900">
+                          {diff.item.productCode}
+                        </span>
+                        <span className="px-2 py-0.5 rounded border border-blue-200 bg-blue-50 text-xs font-semibold text-blue-700">
+                          {diff.priceChanged && diff.supplierChanged
+                            ? 'Đổi giá & NCC'
+                            : diff.priceChanged
+                              ? 'Đổi giá bán'
+                              : 'Đổi NCC'}
+                        </span>
+                      </div>
+                      <p className="font-medium text-slate-900">{diff.item.name}</p>
+                      {diff.priceChanged && (
+                        <p className="text-xs tabular-nums">
+                          Giá:{' '}
+                          <span className="text-slate-400 line-through">
+                            {diff.prevPrice.toLocaleString('vi-VN')}
+                          </span>{' '}
+                          → <strong className="text-blue-700">{diff.item.price.toLocaleString('vi-VN')} đ</strong>
+                        </p>
+                      )}
+                      {diff.supplierChanged && (
+                        <p className="text-xs">
+                          NCC:{' '}
+                          <span className="text-slate-400 line-through">
+                            {diff.prevSupplier || '—'}
+                          </span>{' '}
+                          → <strong className="text-blue-700">{diff.item.supplierName || '—'}</strong>
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 
+      {/* Smart Filter Preview Table — Supplier Return Policies */}
       {subTab === 'policies' && polImportPreview && (
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-sm font-bold text-blue-950">
-              Xem trước Import Chính sách đổi trả NCC
-            </h4>
-            <div className="flex items-center gap-2">
+        <div className="bg-white border border-blue-300 rounded-xl overflow-hidden shadow-xs">
+          <div className="p-4 bg-blue-50/80 border-b border-blue-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h4 className="text-base font-semibold tracking-tight text-slate-900">
+                Bảng kết quả lọc thông minh — Cập nhật chính sách đổi trả
+              </h4>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Tệp: <span className="font-mono font-medium">{polImportPreview.fileName}</span> · Chỉ ghi Tên NCC HT mới hoặc có thay đổi nội dung Đổi trả SP.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => setPolImportPreview(null)}
-                className="px-3 py-1.5 rounded-lg border border-blue-300 bg-white text-xs font-medium text-slate-700"
+                className="min-h-[40px] px-3.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
               >
-                Hủy
+                Hủy bỏ
               </button>
               <button
                 type="button"
@@ -791,18 +1141,155 @@ export function DataWarehouseTab({
                     polImportPreview.toUpdate.length === 0)
                 }
                 onClick={() => void applyPolicyImport()}
-                className="px-4 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+                className="min-h-[40px] px-4 py-1.5 rounded-lg bg-blue-600 text-white text-xs sm:text-sm font-medium hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
               >
-                {importing ? 'Đang import...' : 'Xác nhận áp dụng'}
+                {importing
+                  ? 'Đang cập nhật...'
+                  : `Xác nhận cập nhật (${polImportPreview.toInsert.length + polImportPreview.toUpdate.length})`}
               </button>
             </div>
           </div>
-          <p className="text-xs text-blue-900 tabular-nums">
-            Thêm mới: <strong>{polImportPreview.toInsert.length}</strong> · Cập nhật:{' '}
-            <strong>{polImportPreview.toUpdate.length}</strong> · Bỏ qua:{' '}
-            <strong>{polImportPreview.skippedCount}</strong> · Lỗi:{' '}
-            <strong>{polImportPreview.errors.length}</strong>
-          </p>
+
+          <div className="p-4 space-y-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3">
+                <p className="text-xs font-medium text-emerald-800">Tên NCC HT mới</p>
+                <p className="text-xl font-bold text-emerald-900 tabular-nums mt-0.5">
+                  {polImportPreview.toInsert.length}
+                </p>
+              </div>
+              <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+                <p className="text-xs font-medium text-blue-800">Thay đổi Đổi trả SP</p>
+                <p className="text-xl font-bold text-blue-900 tabular-nums mt-0.5">
+                  {polImportPreview.toUpdate.length}
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs font-medium text-slate-600">Bỏ qua (không đổi)</p>
+                <p className="text-xl font-bold text-slate-800 tabular-nums mt-0.5">
+                  {polImportPreview.skippedCount}
+                </p>
+              </div>
+              <div className="rounded-lg border border-red-200 bg-red-50/60 p-3">
+                <p className="text-xs font-medium text-red-700">Dòng lỗi / thiếu</p>
+                <p className="text-xl font-bold text-red-800 tabular-nums mt-0.5">
+                  {polImportPreview.errors.length}
+                </p>
+              </div>
+            </div>
+
+            {polImportPreview.errors.length > 0 && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                {polImportPreview.errors.slice(0, 5).join(' | ')}
+              </div>
+            )}
+
+            {polImportPreview.toInsert.length === 0 &&
+            polImportPreview.toUpdate.length === 0 ? (
+              <p className="text-sm text-slate-600 text-center py-4">
+                Tất cả Tên NCC HT đều giữ nguyên nội dung Đổi trả SP — không cần ghi thêm dữ liệu.
+              </p>
+            ) : (
+              <>
+                <div className="hidden md:block overflow-x-auto border border-slate-200 rounded-lg max-h-96">
+                  <table className="w-full text-left border-collapse text-sm">
+                    <thead className="sticky top-0 bg-slate-50 z-10">
+                      <tr className="border-b border-slate-200 text-xs font-semibold text-slate-600">
+                        <th className="py-2.5 px-3">Trạng thái lọc</th>
+                        <th className="py-2.5 px-3">Tên NCC HT</th>
+                        <th className="py-2.5 px-3">Tên NCC</th>
+                        <th className="py-2.5 px-3">Tên hàng hóa</th>
+                        <th className="py-2.5 px-3">Đổi trả SP (cũ → mới)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {polImportPreview.toInsert.map((row, idx) => (
+                        <tr key={`pins-${row.supplierSystemName}-${idx}`} className="bg-emerald-50/25">
+                          <td className="py-2 px-3 whitespace-nowrap">
+                            <span className="inline-block px-2 py-0.5 rounded border border-emerald-200 bg-emerald-50 text-xs font-semibold text-emerald-700">
+                              Thêm mới
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 font-bold text-slate-900">
+                            {row.supplierSystemName}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-slate-700">
+                            {row.supplierName || '—'}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-slate-700">
+                            {row.productName}
+                          </td>
+                          <td className="py-2 px-3 text-xs font-semibold text-emerald-800">
+                            {row.returnPolicy}
+                          </td>
+                        </tr>
+                      ))}
+                      {polImportPreview.toUpdate.map((diff, idx) => (
+                        <tr key={`pupd-${diff.item.supplierSystemName}-${idx}`} className="bg-blue-50/20">
+                          <td className="py-2 px-3 whitespace-nowrap">
+                            <span className="inline-block px-2 py-0.5 rounded border border-blue-200 bg-blue-50 text-xs font-semibold text-blue-700">
+                              Cập nhật Đổi trả SP
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 font-bold text-slate-900">
+                            {diff.item.supplierSystemName}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-slate-700">
+                            {diff.item.supplierName || '—'}
+                          </td>
+                          <td className="py-2 px-3 text-xs text-slate-700">
+                            {diff.item.productName}
+                          </td>
+                          <td className="py-2 px-3 text-xs">
+                            <span className="text-slate-400 line-through">
+                              {diff.prevReturnPolicy || '—'}
+                            </span>{' '}
+                            <span className="font-semibold text-blue-700">
+                              → {diff.item.returnPolicy}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="md:hidden divide-y divide-slate-200 border border-slate-200 rounded-lg max-h-96 overflow-y-auto">
+                  {polImportPreview.toInsert.map((row, idx) => (
+                    <div key={`mpins-${row.supplierSystemName}-${idx}`} className="p-3 space-y-1 text-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-slate-900">{row.supplierSystemName}</span>
+                        <span className="px-2 py-0.5 rounded border border-emerald-200 bg-emerald-50 text-xs font-semibold text-emerald-700">
+                          Thêm mới
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600">{row.productName}</p>
+                      <p className="text-xs font-semibold text-emerald-800">{row.returnPolicy}</p>
+                    </div>
+                  ))}
+                  {polImportPreview.toUpdate.map((diff, idx) => (
+                    <div key={`mpupd-${diff.item.supplierSystemName}-${idx}`} className="p-3 space-y-1 text-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-slate-900">
+                          {diff.item.supplierSystemName}
+                        </span>
+                        <span className="px-2 py-0.5 rounded border border-blue-200 bg-blue-50 text-xs font-semibold text-blue-700">
+                          Cập nhật Đổi trả SP
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600">{diff.item.productName}</p>
+                      <p className="text-xs">
+                        <span className="text-slate-400 line-through">
+                          {diff.prevReturnPolicy || '—'}
+                        </span>{' '}
+                        → <strong className="text-blue-700">{diff.item.returnPolicy}</strong>
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -1304,6 +1791,30 @@ export function DataWarehouseTab({
         variant="danger"
         onConfirm={handleConfirmBatchDelete}
         onCancel={() => setConfirmBatchDelete(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmDeleteAll !== null}
+        title={
+          confirmDeleteAll === 'catalog'
+            ? 'Xóa toàn bộ danh mục hàng'
+            : 'Xóa toàn bộ chính sách đổi trả NCC'
+        }
+        description={
+          confirmDeleteAll === 'catalog'
+            ? `Bạn sắp xóa toàn bộ ${catalogTotal.toLocaleString('vi-VN')} mặt hàng hiện có trên hệ thống. Thao tác này không thể hoàn tác. Các mã đang liên kết với Kiểm soát hạn sử dụng hoặc Chương trình khuyến mãi sẽ được giữ lại an toàn.`
+            : `Bạn sắp xóa toàn bộ ${policyTotal.toLocaleString('vi-VN')} chính sách đổi trả nhà cung cấp hiện có trên hệ thống. Thao tác này không thể hoàn tác.`
+        }
+        confirmLabel={
+          confirmDeleteAll === 'catalog'
+            ? 'Xóa toàn bộ danh mục'
+            : 'Xóa toàn bộ chính sách'
+        }
+        variant="danger"
+        onConfirm={() => void handleConfirmDeleteAll()}
+        onCancel={() => {
+          if (!deletingAll) setConfirmDeleteAll(null);
+        }}
       />
     </div>
   );

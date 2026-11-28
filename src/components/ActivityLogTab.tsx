@@ -5,6 +5,7 @@ import {
   ROLE_LABELS,
   filterLogsLast60Days,
 } from '../lib/permissions';
+import { formatViDateTime } from '../lib/scheduleMeta';
 import type { ActivityAction, ActivityLog, ActivityModule } from '../types';
 
 interface ActivityLogTabProps {
@@ -40,16 +41,7 @@ const ACTION_LABELS: Record<ActivityAction, { label: string; textClass: string }
 };
 
 function formatDateTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return new Intl.DateTimeFormat('vi-VN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  }).format(d);
+  return formatViDateTime(iso, true);
 }
 
 export function ActivityLogTab({ logs, loading }: ActivityLogTabProps) {

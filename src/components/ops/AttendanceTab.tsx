@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { useDebouncedValue } from '../../lib/cache';
 import { exportAttendanceToExcel } from '../../lib/excel';
-import { formatViDate, formatYmd } from '../../lib/scheduleMeta';
+import { formatViDate, formatViDateTime, formatYmd } from '../../lib/scheduleMeta';
 import {
   appendAttendanceNoteOrCheckout,
   createAttendanceCheckIn,
@@ -503,7 +503,7 @@ export function AttendanceTab({
       onLogActivity(
         'delete',
         deleteTarget.id,
-        `Xóa chấm công ${deleteTarget.employeeName} (${deleteTarget.workDate})`
+        `Xóa chấm công ${deleteTarget.employeeName} (${formatViDate(deleteTarget.workDate)})`
       );
       void loadRows();
     }
@@ -687,7 +687,7 @@ export function AttendanceTab({
               ) : (
                 editableRows.map((r) => (
                   <option key={r.id} value={r.id}>
-                    {r.workDate} · {r.employeeName} · {r.shiftName}
+                    {formatViDate(r.workDate)} · {r.employeeName} · {r.shiftName}
                   </option>
                 ))
               )}
@@ -779,7 +779,7 @@ export function AttendanceTab({
                 shiftNoteTableRows.slice(0, 15).map(({ record, note }) => (
                   <tr key={`${record.id}_${note.id}`} className="hover:bg-slate-50/70">
                     <td className="py-2.5 px-3 font-mono text-xs text-slate-700 whitespace-nowrap tabular-nums">
-                      {record.workDate}
+                      {formatViDate(record.workDate)}
                     </td>
                     <td className="py-2.5 px-3 font-medium text-slate-900">
                       {record.employeeName}
@@ -796,7 +796,7 @@ export function AttendanceTab({
                     </td>
                     <td className="py-2.5 px-3 text-slate-800">{note.content}</td>
                     <td className="py-2.5 px-3 font-mono text-xs text-slate-500 whitespace-nowrap tabular-nums">
-                      {formatTimeHms(note.createdAt)}
+                      {formatViDateTime(note.createdAt, true)}
                     </td>
                   </tr>
                 ))
@@ -823,7 +823,7 @@ export function AttendanceTab({
                     {NOTE_TYPE_LABELS[note.type] || note.type}
                   </span>
                   <span className="font-mono text-xs text-slate-500 tabular-nums">
-                    {record.workDate} · {formatTimeHms(note.createdAt)}
+                    {formatViDate(record.workDate)} · {formatTimeHms(note.createdAt)}
                   </span>
                 </div>
                 <p className="font-bold text-slate-900">
@@ -936,7 +936,7 @@ export function AttendanceTab({
                   return (
                     <tr key={r.id} className="hover:bg-slate-50/70">
                       <td className="py-3 px-4 font-mono text-xs text-slate-700 tabular-nums whitespace-nowrap">
-                        {r.workDate}
+                        {formatViDate(r.workDate)}
                       </td>
                       <td className="py-3 px-4">
                         <p className="font-semibold text-slate-900">{r.employeeName}</p>
@@ -1065,7 +1065,7 @@ export function AttendanceTab({
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-slate-500">Ngày / Giờ xác nhận:</span>
                       <span className="font-mono font-bold text-emerald-700 tabular-nums">
-                        {r.workDate} · {formatTimeHms(r.checkInAt)}
+                        {formatViDate(r.workDate)} · {formatTimeHms(r.checkInAt)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-2">
@@ -1168,7 +1168,7 @@ export function AttendanceTab({
               </button>
             </div>
             <p className="text-xs text-slate-500">
-              {noteTarget.employeeName} · {noteTarget.shiftName} ({noteTarget.workDate}).
+              {noteTarget.employeeName} · {noteTarget.shiftName} ({formatViDate(noteTarget.workDate)}).
             </p>
 
             <div>
@@ -1434,7 +1434,7 @@ export function AttendanceTab({
         title="Xóa bản ghi chấm công"
         description={
           deleteTarget
-            ? `Bạn có chắc chắn muốn xóa chấm công của ${deleteTarget.employeeName} ngày ${deleteTarget.workDate} (${deleteTarget.shiftName})?`
+            ? `Bạn có chắc chắn muốn xóa chấm công của ${deleteTarget.employeeName} ngày ${formatViDate(deleteTarget.workDate)} (${deleteTarget.shiftName})?`
             : ''
         }
         confirmLabel="Xóa bản ghi"

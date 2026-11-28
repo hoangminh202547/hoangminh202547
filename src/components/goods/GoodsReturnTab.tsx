@@ -15,6 +15,7 @@ import { useDebouncedValue } from '../../lib/cache';
 import { exportReturnsToExcel } from '../../lib/excel';
 import { exportTableToPdf, exportTableToPng } from '../../lib/media';
 import { extractShortStaffName } from '../../lib/permissions';
+import { formatViDate, formatViDateTime } from '../../lib/scheduleMeta';
 import {
   deleteReturnRecords,
   fetchAllPoliciesForCache,
@@ -49,10 +50,7 @@ interface GoodsReturnTabProps {
 }
 
 function formatViDdMmYyyy(ymd: string): string {
-  if (!ymd) return '—';
-  const parts = ymd.split('-');
-  if (parts.length !== 3) return ymd;
-  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  return formatViDate(ymd);
 }
 
 export function GoodsReturnTab({
@@ -156,11 +154,8 @@ export function GoodsReturnTab({
         const top = res.rows[0];
         setLastLiveNotice({
           time: top.updatedAt
-            ? new Intl.DateTimeFormat('vi-VN', {
-                dateStyle: 'short',
-                timeStyle: 'short',
-              }).format(new Date(top.updatedAt))
-            : todayStr,
+            ? formatViDateTime(top.updatedAt, false)
+            : formatViDate(todayStr),
           actor: top.updatedBy || 'Hệ thống',
           summary: top.lastUpdateNote || `${top.supplierSystemName} · ${top.productSummary}`,
         });
@@ -201,9 +196,7 @@ export function GoodsReturnTab({
       return;
     }
     setLastLiveNotice({
-      time: new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short' }).format(
-        new Date()
-      ),
+      time: formatViDateTime(new Date(), false),
       actor: user.email,
       summary: noteText,
     });
@@ -243,9 +236,7 @@ export function GoodsReturnTab({
       return;
     }
     setLastLiveNotice({
-      time: new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short' }).format(
-        new Date()
-      ),
+      time: formatViDateTime(new Date(), false),
       actor: user.email,
       summary: summaryText,
     });

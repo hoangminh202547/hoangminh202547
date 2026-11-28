@@ -48,7 +48,9 @@ export function SettingsTab({
       <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
         <div className="flex items-center gap-2 text-slate-900 font-bold">
           <SlidersHorizontal className="h-5 w-5 text-blue-600" />
-          <h3>Tùy chọn hiển thị &amp; tối ưu tải dữ liệu</h3>
+          <h3 className="text-base font-semibold tracking-tight text-slate-900">
+            Tùy chọn hiển thị &amp; tối ưu tải dữ liệu
+          </h3>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

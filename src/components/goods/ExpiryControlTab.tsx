@@ -23,6 +23,7 @@ import {
   readExcelSheetRows,
 } from '../../lib/excel';
 import { exportTableToPdf, exportTableToPng } from '../../lib/media';
+import { formatViDate } from '../../lib/scheduleMeta';
 import {
   extractNoticeMonthsFromPolicy,
   extractShortStaffName,
@@ -358,7 +359,7 @@ export function ExpiryControlTab({
     onLogActivity(
       editingId ? 'update' : 'create',
       editingId || productCode,
-      `${editingId ? 'Điều chỉnh' : 'Thêm mới'} HSD ${productCode} (${expDate})`
+      `${editingId ? 'Điều chỉnh' : 'Thêm mới'} HSD ${productCode} (${formatViDate(expDate)})`
     );
     resetForm();
     setFormOpen(false);
@@ -450,8 +451,8 @@ export function ExpiryControlTab({
       r.productCode,
       r.productName,
       r.unit,
-      r.mfgDate || '—',
-      r.expDate,
+      formatViDate(r.mfgDate),
+      formatViDate(r.expDate),
       r.returnPolicy || '—',
       `${alert.label}${alert.subLabel ? ` (${alert.subLabel})` : ''}${r.note ? ` · ${r.note}` : ''}`,
       r.ptCode || '—',
@@ -869,10 +870,10 @@ export function ExpiryControlTab({
                       <td className="py-3 px-3 text-slate-900 font-medium">{item.productName}</td>
                       <td className="py-3 px-3 text-xs text-slate-600">{item.unit}</td>
                       <td className="py-3 px-3 font-mono text-xs tabular-nums text-slate-600 whitespace-nowrap">
-                        {item.mfgDate || '—'}
+                        {formatViDate(item.mfgDate)}
                       </td>
                       <td className="py-3 px-3 font-mono text-xs font-bold tabular-nums text-slate-900 whitespace-nowrap">
-                        {item.expDate}
+                        {formatViDate(item.expDate)}
                       </td>
                       <td className="py-3 px-3 text-xs text-slate-700">
                         {item.returnPolicy || '—'}
@@ -972,7 +973,7 @@ export function ExpiryControlTab({
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-slate-500">NSX / HSD:</span>
                       <span className="font-mono font-bold text-slate-900 tabular-nums">
-                        {item.mfgDate || '—'} → {item.expDate}
+                        {formatViDate(item.mfgDate)} → {formatViDate(item.expDate)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-2">

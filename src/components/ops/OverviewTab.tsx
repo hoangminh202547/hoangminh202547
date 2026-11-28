@@ -10,6 +10,7 @@ import {
   RotateCcw,
   Tag,
 } from 'lucide-react';
+import { formatViDate } from '../../lib/scheduleMeta';
 import {
   fetchOverviewSummary,
   useScopedRealtime,
@@ -26,13 +27,11 @@ interface OverviewTabProps {
 
 function formatViDateLong(ymd: string): string {
   const [y, m, d] = ymd.split('-').map(Number);
-  if (!y || !m || !d) return ymd;
-  return new Intl.DateTimeFormat('vi-VN', {
-    weekday: 'long',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  }).format(new Date(y, m - 1, d));
+  if (!y || !m || !d) return formatViDate(ymd);
+  const weekday = new Intl.DateTimeFormat('vi-VN', { weekday: 'long' }).format(
+    new Date(y, m - 1, d)
+  );
+  return `${weekday}, ${formatViDate(ymd)}`;
 }
 
 function getGreeting(): string {

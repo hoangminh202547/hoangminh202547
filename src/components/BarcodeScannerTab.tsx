@@ -6,6 +6,8 @@ import {
   Check,
   Database,
   FileSpreadsheet,
+  Flashlight,
+  Focus,
   Keyboard,
   Minus,
   Plus,
@@ -15,6 +17,7 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { exportBarcodesToExcel } from '../lib/excel';
+import { formatViDateTime } from '../lib/scheduleMeta';
 import type { BarcodeScan } from '../types';
 import { ConfirmDialog } from './ConfirmDialog';
 
@@ -125,6 +128,12 @@ export function BarcodeScannerTab({
   const [cameras, setCameras] = useState<{ id: string; label: string }[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
   const [lastScannedFlash, setLastScannedFlash] = useState<string | null>(null);
+  const [focusLabel, setFocusLabel] = useState<string>('');
+  const [zoomRange, setZoomRange] = useState<{ min: number; max: number; step: number } | null>(null);
+  const [zoomValue, setZoomValue] = useState<number>(1);
+  const [torchSupported, setTorchSupported] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
+  const [refocusing, setRefocusing] = useState(false);
 
   // Filter & editing state
   const [searchQuery, setSearchQuery] = useState('');
@@ -137,6 +146,7 @@ export function BarcodeScannerTab({
   const [clearSessionConfirm, setClearSessionConfirm] = useState(false);
 
   const scannerRef = useRef<Html5Qrcode | null>(null);
+  const videoTrackRef = useRef<MediaStreamTrack | null>(null);
   const lastScanRef = useRef<{ code: string; timestamp: number }>({
     code: '',
     timestamp: 0,
@@ -154,6 +164,123 @@ export function BarcodeScannerTab({
   const cooldownRef = useRef(cooldownMs);
   cooldownRef.current = cooldownMs;
 
+  const configureCloseUpFocus = useCallback(async (preferredZoom?: number) => {
+    const readerEl = document.getElementById('barcode-reader');
+    const videoEl = readerEl?.querySelector('video') as HTMLVideoElement | null;
+    const stream = (videoEl?.srcObject as MediaStream | null) ?? null;
+    const track = stream?.getVideoTracks?.()[0] ?? null;
+    videoTrackRef.current = track;
+
+    if (!track || typeof track.getCapabilities !== 'function') {
+      setFocusLabel('Lấy nét tự động mặc định');
+      return;
+    }
+
+    try {
+      const caps = track.getCapabilities() as Record<string, unknown>;
+      const advanced: Record<string, unknown>[] = [];
+      let statusParts: string[] = [];
+
+      const focusModes = Array.isArray(caps.focusMode) ? (caps.focusMode as string[]) : [];
+      if (focusModes.includes('continuous')) {
+        advanced.push({ focusMode: 'continuous' });
+        statusParts.push('Tự động lấy nét cận cảnh');
+      } else if (focusModes.includes('single-shot')) {
+        advanced.push({ focusMode: 'single-shot' });
+        statusParts.push('Lấy nét tự động');
+      }
+
+      const zoomCap = caps.zoom as { min?: number; max?: number; step?: number } | undefined;
+      if (zoomCap && typeof zoomCap.min === 'number' && typeof zoomCap.max === 'number' && zoomCap.max > zoomCap.min) {
+        const step = typeof zoomCap.step === 'number' && zoomCap.step > 0 ? zoomCap.step : 0.1;
+        setZoomRange({ min: zoomCap.min, max: zoomCap.max, step });
+        const initialZoom =
+          typeof preferredZoom === 'number'
+            ? preferredZoom
+            : Math.min(zoomCap.max, Math.max(zoomCap.min, 1.5));
+        advanced.push({ zoom: initialZoom });
+        setZoomValue(initialZoom);
+        statusParts.push(`Zoom ${initialZoom.toFixed(1)}x`);
+      } else {
+        setZoomRange(null);
+      }
+
+      setTorchSupported(Boolean(caps.torch));
+
+      if (advanced.length > 0) {
+        await track.applyConstraints({
+          advanced: advanced as unknown as MediaTrackConstraintSet[],
+        });
+      }
+      setFocusLabel(statusParts.length > 0 ? statusParts.join(' · ') : 'Lấy nét tự động');
+    } catch {
+      setFocusLabel('Lấy nét tự động mặc định');
+    }
+  }, []);
+
+  const triggerManualRefocus = useCallback(async () => {
+    const track = videoTrackRef.current;
+    if (!track || typeof track.getCapabilities !== 'function') return;
+    setRefocusing(true);
+    try {
+      const caps = track.getCapabilities() as Record<string, unknown>;
+      const focusModes = Array.isArray(caps.focusMode) ? (caps.focusMode as string[]) : [];
+      if (focusModes.includes('single-shot')) {
+        await track.applyConstraints({
+          advanced: [{ focusMode: 'single-shot' }] as unknown as MediaTrackConstraintSet[],
+        });
+        window.setTimeout(() => {
+          if (videoTrackRef.current === track && focusModes.includes('continuous')) {
+            void track
+              .applyConstraints({
+                advanced: [{ focusMode: 'continuous' }] as unknown as MediaTrackConstraintSet[],
+              })
+              .catch(() => {});
+          }
+        }, 450);
+      } else if (focusModes.includes('continuous')) {
+        await track.applyConstraints({
+          advanced: [{ focusMode: 'continuous' }] as unknown as MediaTrackConstraintSet[],
+        });
+      }
+    } catch {
+      // Ignore camera driver limitation
+    } finally {
+      window.setTimeout(() => setRefocusing(false), 500);
+    }
+  }, []);
+
+  const handleZoomChange = async (nextZoom: number) => {
+    setZoomValue(nextZoom);
+    const track = videoTrackRef.current;
+    if (!track) return;
+    try {
+      await track.applyConstraints({
+        advanced: [{ zoom: nextZoom }] as unknown as MediaTrackConstraintSet[],
+      });
+      setFocusLabel((prev) => {
+        const base = prev.split(' · Zoom')[0] || 'Tự động lấy nét cận cảnh';
+        return `${base} · Zoom ${nextZoom.toFixed(1)}x`;
+      });
+    } catch {
+      // Ignore unsupported zoom updates
+    }
+  };
+
+  const handleToggleTorch = async () => {
+    const track = videoTrackRef.current;
+    if (!track || !torchSupported) return;
+    const next = !torchOn;
+    try {
+      await track.applyConstraints({
+        advanced: [{ torch: next }] as unknown as MediaTrackConstraintSet[],
+      });
+      setTorchOn(next);
+    } catch {
+      onNotify('info', 'Thiết bị không cho phép bật đèn flash trên trình duyệt này.');
+    }
+  };
+
   const stopCamera = useCallback(async () => {
     const instance = scannerRef.current;
     if (instance) {
@@ -167,6 +294,11 @@ export function BarcodeScannerTab({
       }
       scannerRef.current = null;
     }
+    videoTrackRef.current = null;
+    setZoomRange(null);
+    setTorchSupported(false);
+    setTorchOn(false);
+    setFocusLabel('');
     setIsScanning(false);
   }, []);
 
@@ -248,8 +380,8 @@ export function BarcodeScannerTab({
       await scanner.start(
         cameraConfig,
         {
-          fps: 12,
-          qrbox: { width: 260, height: 150 },
+          fps: 15,
+          qrbox: { width: 270, height: 140 },
           aspectRatio: 1.777778,
         },
         (decodedText, decodedResult) => {
@@ -263,6 +395,9 @@ export function BarcodeScannerTab({
       );
 
       setIsScanning(true);
+      window.setTimeout(() => {
+        void configureCloseUpFocus();
+      }, 280);
     } catch (err) {
       const rawMsg =
         err instanceof Error
@@ -373,15 +508,7 @@ export function BarcodeScannerTab({
 
   const formatTime = (scan: BarcodeScan) => {
     if (!scan.scannedAt) return 'Vừa xong';
-    const d = new Date(scan.scannedAt);
-    if (Number.isNaN(d.getTime())) return 'Vừa xong';
-    return new Intl.DateTimeFormat('vi-VN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      day: '2-digit',
-      month: '2-digit',
-    }).format(d);
+    return formatViDateTime(scan.scannedAt, true);
   };
 
   return (
@@ -422,11 +549,11 @@ export function BarcodeScannerTab({
             <div>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h2 className="text-lg font-bold text-slate-900">
+                  <h2 className="text-base font-semibold tracking-tight text-slate-900">
                     Quét mã vạch liên tục bằng Camera
                   </h2>
                   <p className="text-sm text-slate-600 mt-0.5">
-                    Đưa mã vạch EAN-13, Code-128 hoặc QR vào khung ngắm để tự động ghi nhận.
+                    Đưa mã vạch EAN-13, Code-128 hoặc QR ngang qua vạch đỏ để lấy nét cận cảnh và ghi nhận tự động.
                   </p>
                 </div>
                 <button
@@ -449,13 +576,42 @@ export function BarcodeScannerTab({
                 </button>
               </div>
 
-              {/* Camera viewport */}
+              {/* Camera viewport with close-up tap-to-focus & red laser aim line */}
               <div
-                className={`mt-4 relative rounded-xl overflow-hidden bg-slate-900 aspect-video max-h-[320px] w-full flex items-center justify-center border-2 transition-colors ${
+                onClick={() => {
+                  if (isScanning) void triggerManualRefocus();
+                }}
+                className={`mt-4 relative rounded-xl overflow-hidden bg-slate-900 aspect-video max-h-[340px] w-full flex items-center justify-center border-2 transition-colors ${
                   lastScannedFlash ? 'border-emerald-500' : 'border-slate-200'
-                }`}
+                } ${isScanning ? 'cursor-crosshair' : ''}`}
+                title={isScanning ? 'Chạm vào khung hình để lấy nét lại cận cảnh' : undefined}
               >
                 <div id="barcode-reader" className="w-full h-full" />
+
+                {isScanning && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                    {/* Crisp viewfinder target frame + centered red laser aim line */}
+                    <div className="relative w-[78%] max-w-[300px] h-[46%] max-h-[150px] rounded-lg border border-white/35 bg-black/5">
+                      <span className="absolute -top-0.5 -left-0.5 h-4 w-4 border-t-2 border-l-2 border-red-500 rounded-tl" />
+                      <span className="absolute -top-0.5 -right-0.5 h-4 w-4 border-t-2 border-r-2 border-red-500 rounded-tr" />
+                      <span className="absolute -bottom-0.5 -left-0.5 h-4 w-4 border-b-2 border-l-2 border-red-500 rounded-bl" />
+                      <span className="absolute -bottom-0.5 -right-0.5 h-4 w-4 border-b-2 border-r-2 border-red-500 rounded-br" />
+
+                      {/* Red horizontal scan aim line */}
+                      <div className="absolute left-2 right-2 top-1/2 -translate-y-1/2 h-[2px] bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.95)]" />
+
+                      <span className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs font-medium text-white/90 bg-slate-950/75 px-2 py-0.5 rounded">
+                        {refocusing ? 'Đang lấy nét cận cảnh...' : 'Canh mã vạch ngang vạch đỏ'}
+                      </span>
+                    </div>
+
+                    {focusLabel && (
+                      <div className="absolute top-2.5 left-2.5 px-2.5 py-1 rounded bg-slate-950/75 text-white text-xs font-medium tabular-nums">
+                        {focusLabel}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {!isScanning && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-900 text-white">
@@ -464,7 +620,7 @@ export function BarcodeScannerTab({
                       Camera đang tạm dừng
                     </p>
                     <p className="text-sm text-slate-400 mt-1 max-w-sm">
-                      Nhấn &quot;Bắt đầu quét&quot; để mở camera sau trên điện thoại hoặc webcam trên máy tính.
+                      Nhấn &quot;Bắt đầu quét&quot; để mở camera sau (tự động lấy nét cận cảnh) hoặc webcam trên máy tính.
                     </p>
                   </div>
                 )}
@@ -489,63 +645,110 @@ export function BarcodeScannerTab({
               )}
             </div>
 
-            {/* Camera controls */}
-            <div className="mt-4 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-2.5">
-                {!isScanning ? (
-                  <button
-                    type="button"
-                    onClick={startCamera}
-                    disabled={startingCamera}
-                    className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors whitespace-nowrap"
-                  >
-                    <Camera className="h-4 w-4" />
-                    <span>{startingCamera ? 'Đang mở camera...' : 'Bắt đầu quét'}</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={stopCamera}
-                    className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors whitespace-nowrap"
-                  >
-                    <CameraOff className="h-4 w-4" />
-                    <span>Dừng camera</span>
-                  </button>
-                )}
+            {/* Camera controls + close-up focus / zoom / torch */}
+            <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  {!isScanning ? (
+                    <button
+                      type="button"
+                      onClick={startCamera}
+                      disabled={startingCamera}
+                      className="min-h-[44px] inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors whitespace-nowrap"
+                    >
+                      <Camera className="h-4 w-4" />
+                      <span>{startingCamera ? 'Đang mở camera...' : 'Bắt đầu quét'}</span>
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={stopCamera}
+                        className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors whitespace-nowrap"
+                      >
+                        <CameraOff className="h-4 w-4" />
+                        <span>Dừng camera</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void triggerManualRefocus()}
+                        className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap"
+                      >
+                        <Focus className="h-4 w-4 text-blue-600" />
+                        <span>Lấy nét lại</span>
+                      </button>
+                      {torchSupported && (
+                        <button
+                          type="button"
+                          onClick={() => void handleToggleTorch()}
+                          className={`min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap ${
+                            torchOn
+                              ? 'bg-amber-100 border-amber-400 text-amber-900'
+                              : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          <Flashlight className="h-4 w-4" />
+                          <span>{torchOn ? 'Tắt đèn' : 'Đèn flash'}</span>
+                        </button>
+                      )}
+                    </>
+                  )}
 
-                {cameras.length > 1 && (
+                  {cameras.length > 1 && (
+                    <select
+                      value={selectedCameraId}
+                      onChange={(e) => setSelectedCameraId(e.target.value)}
+                      disabled={isScanning}
+                      className="min-h-[44px] px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-700 max-w-[200px]"
+                      aria-label="Chọn camera"
+                    >
+                      <option value="">Tự động chọn camera</option>
+                      {cameras.map((cam) => (
+                        <option key={cam.id} value={cam.id}>
+                          {cam.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 text-sm text-slate-600">
+                  <label htmlFor="cooldown-select" className="whitespace-nowrap">
+                    Độ trễ quét lại:
+                  </label>
                   <select
-                    value={selectedCameraId}
-                    onChange={(e) => setSelectedCameraId(e.target.value)}
-                    disabled={isScanning}
-                    className="min-h-[44px] px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg text-slate-700 max-w-[200px]"
-                    aria-label="Chọn camera"
+                    id="cooldown-select"
+                    value={cooldownMs}
+                    onChange={(e) => setCooldownMs(Number(e.target.value))}
+                    className="min-h-[44px] px-2.5 py-1.5 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 tabular-nums"
                   >
-                    <option value="">Tự động chọn camera</option>
-                    {cameras.map((cam) => (
-                      <option key={cam.id} value={cam.id}>
-                        {cam.label}
-                      </option>
-                    ))}
+                    <option value={1000}>1.0 giây</option>
+                    <option value={1800}>1.8 giây</option>
+                    <option value={3000}>3.0 giây</option>
                   </select>
-                )}
+                </div>
               </div>
 
-              <div className="flex items-center gap-2 text-sm text-slate-600">
-                <label htmlFor="cooldown-select" className="whitespace-nowrap">
-                  Độ trễ quét lại:
-                </label>
-                <select
-                  id="cooldown-select"
-                  value={cooldownMs}
-                  onChange={(e) => setCooldownMs(Number(e.target.value))}
-                  className="min-h-[44px] px-2.5 py-1.5 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 tabular-nums"
-                >
-                  <option value={1000}>1.0 giây</option>
-                  <option value={1800}>1.8 giây</option>
-                  <option value={3000}>3.0 giây</option>
-                </select>
-              </div>
+              {isScanning && zoomRange && (
+                <div className="flex items-center gap-3 pt-1">
+                  <span className="text-xs font-medium text-slate-600 whitespace-nowrap">
+                    Thu phóng cận cảnh:
+                  </span>
+                  <input
+                    type="range"
+                    min={zoomRange.min}
+                    max={Math.min(zoomRange.max, 4)}
+                    step={zoomRange.step}
+                    value={zoomValue}
+                    onChange={(e) => void handleZoomChange(Number(e.target.value))}
+                    className="flex-1 accent-blue-600"
+                    aria-label="Thu phóng cận cảnh camera"
+                  />
+                  <span className="text-xs font-semibold text-slate-800 tabular-nums whitespace-nowrap">
+                    {zoomValue.toFixed(1)}x
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -553,7 +756,7 @@ export function BarcodeScannerTab({
           <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between">
             <div className="space-y-4">
               <div>
-                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <h2 className="text-base font-semibold tracking-tight text-slate-900 flex items-center gap-2">
                   <Keyboard className="h-5 w-5 text-blue-600 shrink-0" />
                   <span>Nhập tay &amp; Súng quét USB</span>
                 </h2>

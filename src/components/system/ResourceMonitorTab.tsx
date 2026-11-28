@@ -6,6 +6,7 @@ import {
   RefreshCw,
   ShieldAlert,
 } from 'lucide-react';
+import { formatViDateTime } from '../../lib/scheduleMeta';
 import {
   fetchSupabaseUsageMetrics,
   type ResourceSeverity,
@@ -22,14 +23,7 @@ const REFRESH_COOLDOWN_SECONDS = 30;
 
 function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return 'Chưa có';
-  try {
-    return new Intl.DateTimeFormat('vi-VN', {
-      dateStyle: 'short',
-      timeStyle: 'medium',
-    }).format(new Date(iso));
-  } catch {
-    return iso;
-  }
+  return formatViDateTime(iso, true);
 }
 
 function getSeverityStyles(severity: ResourceSeverity): {

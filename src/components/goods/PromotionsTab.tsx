@@ -21,6 +21,7 @@ import {
   readExcelSheetRows,
 } from '../../lib/excel';
 import { exportTableToPdf, exportTableToPng } from '../../lib/media';
+import { formatViDate } from '../../lib/scheduleMeta';
 import { extractShortStaffName } from '../../lib/permissions';
 import {
   deletePromotionsBatch,
@@ -321,7 +322,7 @@ export function PromotionsTab({
     r.productCode,
     r.hasBBadge ? `${r.productName} [B]` : r.productName,
     r.unit,
-    r.expDate || '—',
+    formatViDate(r.expDate),
     r.quantity,
     `${r.discountRate}%`,
     r.regularPrice.toLocaleString('vi-VN'),
@@ -752,7 +753,7 @@ export function PromotionsTab({
                     </td>
                     <td className="py-3 px-3 text-xs text-slate-600">{item.unit}</td>
                     <td className="py-3 px-3 font-mono text-xs tabular-nums text-slate-800 whitespace-nowrap">
-                      {item.expDate || '—'}
+                      {formatViDate(item.expDate)}
                     </td>
                     <td className="py-3 px-3 font-mono text-xs text-right tabular-nums">
                       {item.quantity}
@@ -866,7 +867,7 @@ export function PromotionsTab({
                   <div>
                     <span className="text-xs text-slate-500 block">HSD</span>
                     <span className="font-mono text-slate-800 tabular-nums">
-                      {item.expDate || '—'}
+                      {formatViDate(item.expDate)}
                     </span>
                   </div>
                   <div className="text-right">

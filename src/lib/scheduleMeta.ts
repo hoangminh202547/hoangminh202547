@@ -250,10 +250,42 @@ export function parseYmd(ymd: string): Date {
   return dt;
 }
 
-export function formatViDate(ymd: string): string {
-  const parts = ymd.split('-');
-  if (parts.length !== 3) return ymd;
-  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+export function formatViDate(ymdOrIso: string | null | undefined): string {
+  if (!ymdOrIso) return '—';
+  const raw = String(ymdOrIso).trim();
+  if (!raw) return '—';
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) return raw;
+  const datePart = raw.length >= 10 ? raw.slice(0, 10) : raw;
+  const parts = datePart.split('-');
+  if (parts.length === 3 && parts[0].length === 4) {
+    return `${parts[2].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[0]}`;
+  }
+  const dt = new Date(raw);
+  if (!Number.isNaN(dt.getTime())) {
+    const dd = String(dt.getDate()).padStart(2, '0');
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    const yyyy = dt.getFullYear();
+    return `${dd}/${mm}/${yyyy}`;
+  }
+  return raw;
+}
+
+export function formatViDateTime(
+  iso: string | Date | null | undefined,
+  includeSeconds = true
+): string {
+  if (!iso) return '—';
+  const dt = iso instanceof Date ? iso : new Date(iso);
+  if (Number.isNaN(dt.getTime())) return typeof iso === 'string' ? iso : '—';
+  const hh = String(dt.getHours()).padStart(2, '0');
+  const min = String(dt.getMinutes()).padStart(2, '0');
+  const ss = String(dt.getSeconds()).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const yyyy = dt.getFullYear();
+  return includeSeconds
+    ? `${hh}:${min}:${ss} · ${dd}/${mm}/${yyyy}`
+    : `${hh}:${min} · ${dd}/${mm}/${yyyy}`;
 }
 
 export function formatRegisteredTimestamp(iso: string | null): string {

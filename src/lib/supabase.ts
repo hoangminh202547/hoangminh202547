@@ -18,6 +18,7 @@ import type {
   AuthorizedEmail,
   BarcodeScan,
   ModuleAccessFlags,
+  SchedulePermissionLevel,
   ScheduleStatus,
   ShiftType,
   SupabaseConfig,
@@ -29,6 +30,8 @@ import type {
   WorkSchedule,
 } from '../types';
 import {
+  ROLE_DEFAULT_MODULES,
+  ROLE_DEFAULT_PERMS,
   emailToKey,
   filterLogsLast60Days,
   getActivityLogCutoffIso,
@@ -938,36 +941,79 @@ export function mapScheduleRow(r: Record<string, unknown>): WorkSchedule {
   };
 }
 
+function parseScheduleLevelValue(raw: unknown): SchedulePermissionLevel | undefined {
+  if (raw === 'view' || raw === 'edit' || raw === 'manage' || raw === 'admin') {
+    return raw;
+  }
+  return undefined;
+}
+
+function extractCleanModulePerms(
+  raw: unknown
+): Partial<ModuleAccessFlags> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const src = raw as Record<string, unknown>;
+  const cleaned: Partial<ModuleAccessFlags> = {};
+  let hasFlag = false;
+  for (const key of Object.keys(ROLE_DEFAULT_MODULES.staff) as Array<
+    keyof ModuleAccessFlags
+  >) {
+    if (typeof src[key] === 'boolean') {
+      cleaned[key] = Boolean(src[key]);
+      hasFlag = true;
+    }
+  }
+  return hasFlag ? cleaned : undefined;
+}
+
 export function mapAccessRow(r: Record<string, unknown>): AuthorizedEmail {
   const role = normalizeRole(r.role);
+  const scopeAll = Boolean(
+    r.scope_all ??
+      (role === 'store_manager' ||
+        role === 'supervisor' ||
+        role === 'shift_lead')
+  );
+  const scheduleEdit = Boolean(r.schedule_edit ?? true);
+  const scheduleApprove = Boolean(r.schedule_approve ?? false);
+  const rawModulePerms =
+    r.module_perms && typeof r.module_perms === 'object'
+      ? (r.module_perms as Record<string, unknown>)
+      : undefined;
+  const explicitLevel = parseScheduleLevelValue(
+    r.schedule_level ?? rawModulePerms?.__scheduleLevel
+  );
+  const derivedScheduleLevel: SchedulePermissionLevel =
+    explicitLevel ??
+    (role === 'store_manager'
+      ? 'admin'
+      : scheduleApprove || role === 'supervisor'
+        ? 'manage'
+        : role === 'shift_lead' || (scheduleEdit && scopeAll)
+          ? 'edit'
+          : 'view');
+
   return {
     id: String(r.id || ''),
     email: normalizeEmail(String(r.email || '')),
     displayName: String(r.display_name || ''),
     role,
     active: Boolean(r.active),
-    scopeAll: Boolean(
-      r.scope_all ??
-        (role === 'store_manager' ||
-          role === 'supervisor' ||
-          role === 'shift_lead')
-    ),
+    scopeAll,
     barcodeView: Boolean(r.barcode_view ?? true),
     barcodeCreate: Boolean(r.barcode_create ?? true),
     barcodeEdit: Boolean(r.barcode_edit ?? true),
     barcodeDelete: Boolean(r.barcode_delete ?? false),
     scheduleView: Boolean(r.schedule_view ?? true),
     scheduleCreate: Boolean(r.schedule_create ?? true),
-    scheduleEdit: Boolean(r.schedule_edit ?? true),
+    scheduleEdit,
     scheduleDelete: Boolean(r.schedule_delete ?? false),
-    scheduleApprove: Boolean(r.schedule_approve ?? false),
+    scheduleApprove,
+    scheduleLevel: derivedScheduleLevel,
     allowExport: Boolean(r.allow_export ?? true),
     activityView: Boolean(r.activity_view ?? false),
     allowSupabase: Boolean(r.allow_supabase ?? false),
-    modulePerms:
-      r.module_perms && typeof r.module_perms === 'object'
-        ? (r.module_perms as Partial<ModuleAccessFlags>)
-        : undefined,
+    modulePerms: extractCleanModulePerms(rawModulePerms),
     note: String(r.note || ''),
     grantedBy: String(r.granted_by || ''),
     version: Number(r.version || 1),
@@ -2259,6 +2305,7 @@ export async function saveUserAccessInSupabase(
     scheduleEdit: boolean;
     scheduleDelete: boolean;
     scheduleApprove: boolean;
+    scheduleLevel?: SchedulePermissionLevel;
     allowExport: boolean;
     activityView: boolean;
     allowSupabase: boolean;
@@ -2275,6 +2322,11 @@ export async function saveUserAccessInSupabase(
   const cleanEmail = normalizeEmail(params.email);
   const id = emailToKey(cleanEmail);
   const now = new Date().toISOString();
+  const resolvedScheduleLevel: SchedulePermissionLevel =
+    parseScheduleLevelValue(params.scheduleLevel) ??
+    ROLE_DEFAULT_PERMS[params.role].scheduleLevel ??
+    (params.scheduleApprove ? 'manage' : params.scheduleEdit && params.scopeAll ? 'edit' : 'view');
+  const cleanModulePerms = extractCleanModulePerms(params.modulePerms);
 
   const payload: Record<string, unknown> = {
     email: cleanEmail,
@@ -2294,13 +2346,15 @@ export async function saveUserAccessInSupabase(
     allow_export: params.allowExport,
     activity_view: params.activityView,
     allow_supabase: params.allowSupabase,
+    module_perms: {
+      ...ROLE_DEFAULT_MODULES[params.role],
+      ...(cleanModulePerms || {}),
+      __scheduleLevel: resolvedScheduleLevel,
+    },
     note: params.note.slice(0, 300),
     granted_by: authCheck.email || normalizeEmail(params.grantedBy),
     updated_at: now,
   };
-  if (params.modulePerms) {
-    payload.module_perms = params.modulePerms;
-  }
 
   if (params.isEdit && params.expectedVersion !== undefined) {
     let { data, error } = await client

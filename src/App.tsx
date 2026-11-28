@@ -1904,6 +1904,7 @@ function MainApp() {
         scheduleEdit: member.scheduleEdit,
         scheduleDelete: member.scheduleDelete,
         scheduleApprove: member.scheduleApprove,
+        scheduleLevel: member.scheduleLevel,
         allowExport: member.allowExport,
         activityView: member.activityView,
         allowSupabase: member.allowSupabase,
@@ -2499,6 +2500,8 @@ function MainApp() {
             ),
             scheduleDelete: Boolean(data.scheduleDelete ?? defaults.scheduleDelete),
             scheduleApprove: Boolean(data.scheduleApprove ?? defaults.scheduleApprove),
+            scheduleLevel:
+              parseScheduleLevel(data.scheduleLevel) || defaults.scheduleLevel,
             allowExport: Boolean(data.allowExport ?? defaults.allowExport),
             activityView: Boolean(data.activityView ?? defaults.activityView),
             allowSupabase: Boolean(data.allowSupabase ?? defaults.allowSupabase),
