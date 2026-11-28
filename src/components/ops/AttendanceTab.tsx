@@ -67,8 +67,8 @@ const NOTE_TYPE_BADGE: Record<AttendanceNoteEntry['type'], string> = {
 };
 
 const STATUS_BADGE: Record<AttendanceRecord['status'], { label: string; cls: string }> = {
-  checked_in: { label: 'Đang trong ca', cls: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
-  checked_out: { label: 'Đã kết ca', cls: 'text-slate-700 bg-slate-100 border-slate-200' },
+  checked_in: { label: 'Đã xác nhận ca', cls: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
+  checked_out: { label: 'Đã xác nhận ca', cls: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
   early_leave: { label: 'Về sớm', cls: 'text-amber-700 bg-amber-50 border-amber-200' },
   overtime: { label: 'Tăng ca', cls: 'text-blue-700 bg-blue-50 border-blue-200' },
   clear_time: { label: 'Clear giờ', cls: 'text-violet-700 bg-violet-50 border-violet-200' },
@@ -293,31 +293,10 @@ export function AttendanceTab({
       return;
     }
     setInitialNote('');
-    onNotify('success', `Đã xác nhận vào ca lúc ${clickTimeLabel} (thời gian thực).`);
+    onNotify('success', `Đã xác nhận ca lúc ${clickTimeLabel} (thời gian thực).`);
     if (res.data) {
-      onLogActivity('create', res.data.id, `Chấm công ca ${res.data.shiftName}`);
+      onLogActivity('create', res.data.id, `Xác nhận ca ${res.data.shiftName}`);
     }
-    void loadRows();
-  };
-
-  const handleQuickCheckout = async (record: AttendanceRecord) => {
-    if (!client) return;
-    const clickTimeLabel = formatTimeHms(new Date());
-    setSubmitting(true);
-    const res = await appendAttendanceNoteOrCheckout(client, record, {
-      actorEmail: user.email,
-      noteType: 'note',
-      noteContent: `Xác nhận kết ca lúc ${clickTimeLabel}`,
-      nextStatus: 'checked_out',
-      markCheckout: true,
-    });
-    setSubmitting(false);
-    if (res.error) {
-      onNotify('error', res.error);
-      return;
-    }
-    onNotify('success', `Đã xác nhận kết ca lúc ${clickTimeLabel}.`);
-    onLogActivity('update', record.id, `Kết ca ${record.shiftName} lúc ${clickTimeLabel}`);
     void loadRows();
   };
 
@@ -334,7 +313,7 @@ export function AttendanceTab({
       ownerId: user.uid,
       ownerEmail: user.email,
       employeeName: user.displayName,
-      shiftName: unscheduledShift.trim() || 'Ca ngoài lịch',
+      shiftName: unscheduledShift.trim() || 'Ca phát sinh',
       workDate: todayStr,
       isUnscheduled: true,
       initialNote,
@@ -345,9 +324,9 @@ export function AttendanceTab({
       return;
     }
     setInitialNote('');
-    onNotify('success', `Đã chấm công ngoài lịch lúc ${clickTimeLabel}.`);
+    onNotify('success', `Đã xác nhận ca lúc ${clickTimeLabel} (thời gian thực).`);
     if (res.data) {
-      onLogActivity('create', res.data.id, `Chấm công ngoài lịch ${res.data.shiftName}`);
+      onLogActivity('create', res.data.id, `Xác nhận ca ngoài lịch ${res.data.shiftName}`);
     }
     void loadRows();
   };
@@ -554,29 +533,26 @@ export function AttendanceTab({
 
   return (
     <div className="space-y-6">
-      {/* Real-time Check-in Section */}
+      {/* Real-time 1-Step Shift Confirmation Section */}
       <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <div className="flex flex-wrap items-center gap-2.5">
               <h2 className="text-base font-bold text-slate-900">
-                Xác nhận chấm công hôm nay ({formatViDate(todayStr)})
+                Xác nhận ca làm việc hôm nay ({formatViDate(todayStr)})
               </h2>
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-mono font-bold text-emerald-800 tabular-nums">
                 <Clock className="h-3.5 w-3.5 text-emerald-600" />
                 <span>{formatTimeHms(nowClock)}</span>
               </span>
             </div>
-            <p className="text-xs text-slate-500 mt-1">
-              Thời gian vào/ra ca được ghi nhận theo thời gian thực ngay tại thời điểm bấm nút xác nhận.
+            <p className="text-xs sm:text-sm text-slate-600 mt-1">
+              Chỉ cần bấm nút xác nhận ca — hệ thống tự động ghi nhận chính xác thời gian thực tại thời điểm nhấn.
             </p>
           </div>
-          <div className="flex items-center gap-4 text-xs text-slate-600 tabular-nums">
+          <div className="flex items-center gap-4 text-xs sm:text-sm text-slate-600 tabular-nums">
             <span>
               Tổng lượt lọc: <strong className="text-slate-900">{stats.totalShifts}</strong>
-            </span>
-            <span>
-              Giờ đã kết ca trang này: <strong className="text-slate-900">{stats.pageHours}h</strong>
             </span>
           </div>
         </div>
@@ -592,25 +568,20 @@ export function AttendanceTab({
                     r.ownerEmail === user.email.toLowerCase() &&
                     r.shiftName.includes(s.title))
               );
-              const isCheckedInActive = Boolean(existingRecord && !existingRecord.checkOutAt);
-              const isCheckedOut = Boolean(existingRecord && existingRecord.checkOutAt);
 
               return (
                 <div
                   key={s.id}
                   className="border border-slate-200 rounded-lg p-3.5 flex items-center justify-between gap-3"
                 >
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-sm font-bold text-slate-900">{s.title}</p>
                     <p className="text-xs font-mono text-slate-500 tabular-nums">
                       {s.startTime} – {s.endTime} {s.location ? `· ${s.location}` : ''}
                     </p>
                     {existingRecord && (
-                      <p className="text-[11px] font-mono text-emerald-700 mt-0.5 tabular-nums">
-                        Vào: {formatTimeHms(existingRecord.checkInAt)}
-                        {existingRecord.checkOutAt
-                          ? ` · Ra: ${formatTimeHms(existingRecord.checkOutAt)}`
-                          : ' · Đang trong ca'}
+                      <p className="text-xs font-mono text-emerald-700 mt-1 font-semibold tabular-nums">
+                        Đã xác nhận lúc {formatTimeHms(existingRecord.checkInAt)}
                       </p>
                     )}
                   </div>
@@ -620,24 +591,15 @@ export function AttendanceTab({
                       type="button"
                       disabled={submitting || !client}
                       onClick={() => void handleScheduledCheckIn(s)}
-                      className="min-h-[42px] px-4 py-2 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 disabled:opacity-50 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                      className="min-h-[42px] px-4 py-2 rounded-lg bg-emerald-600 text-white text-xs sm:text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
                     >
                       <CheckCircle2 className="h-4 w-4" />
-                      <span>Vào ca ngay</span>
-                    </button>
-                  ) : isCheckedInActive ? (
-                    <button
-                      type="button"
-                      disabled={submitting || !client}
-                      onClick={() => void handleQuickCheckout(existingRecord)}
-                      className="min-h-[42px] px-4 py-2 rounded-lg bg-amber-600 text-white text-xs font-medium hover:bg-amber-700 disabled:opacity-50 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                    >
-                      <CheckOutIcon className="h-4 w-4" />
-                      <span>Kết ca ngay</span>
+                      <span>Xác nhận ca</span>
                     </button>
                   ) : (
-                    <span className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium whitespace-nowrap shrink-0">
-                      {isCheckedOut ? 'Đã hoàn thành ca' : 'Đã chấm công'}
+                    <span className="px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold whitespace-nowrap shrink-0 inline-flex items-center gap-1">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      <span>Đã xác nhận</span>
                     </span>
                   )}
                 </div>
@@ -646,14 +608,14 @@ export function AttendanceTab({
           </div>
         )}
 
-        {/* Unscheduled check-in */}
+        {/* Quick shift confirmation (unscheduled / extra shift) */}
         <form
           onSubmit={handleUnscheduledCheckIn}
           className="grid grid-cols-1 sm:grid-cols-12 gap-3 pt-2 border-t border-slate-100"
         >
           <div className="sm:col-span-4">
             <label className="block text-xs font-medium text-slate-600 mb-1">
-              Chấm công ngoài lịch / Ca phát sinh
+              Chọn ca xác nhận nhanh / Ca phát sinh
             </label>
             <select
               value={unscheduledShift}
@@ -689,7 +651,7 @@ export function AttendanceTab({
               className="w-full min-h-[42px] px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
             >
               <Plus className="h-4 w-4" />
-              <span>Chấm công ngay</span>
+              <span>Xác nhận ca ngay</span>
             </button>
           </div>
         </form>
@@ -753,7 +715,7 @@ export function AttendanceTab({
 
           <div className="sm:col-span-3">
             <label className="block text-xs font-medium text-slate-700 mb-1">
-              Cập nhật giờ ra
+              Thao tác giờ (nếu cần)
             </label>
             <select
               value={quickActionMode}
@@ -765,8 +727,8 @@ export function AttendanceTab({
               className="w-full min-h-[40px] px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white"
             >
               <option value="note_only">Chỉ ghi chú thêm</option>
-              <option value="checkout_now">Chốt giờ ra ngay ({formatTimeHms(nowClock)})</option>
-              <option value="clear_checkout">Clear giờ ra (xóa giờ ra)</option>
+              <option value="clear_checkout">Clear giờ (xóa mốc giờ thêm)</option>
+              <option value="checkout_now">Ghi nhận giờ kết thúc ({formatTimeHms(nowClock)})</option>
             </select>
           </div>
 
@@ -785,7 +747,7 @@ export function AttendanceTab({
               <button
                 type="submit"
                 disabled={submitting || !client || !quickRecordId}
-                className="min-h-[40px] px-3.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap shrink-0"
+                className="min-h-[40px] px-3.5 py-1.5 rounded-lg bg-blue-600 text-white text-xs sm:text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap shrink-0"
               >
                 Lưu
               </button>
@@ -793,11 +755,11 @@ export function AttendanceTab({
           </div>
         </form>
 
-        {/* Compact table of overtime / early_leave / clear_time notes */}
-        <div className="overflow-x-auto border border-slate-200 rounded-lg">
-          <table className="w-full text-left border-collapse text-xs sm:text-sm">
+        {/* Desktop table of overtime / early_leave / clear_time notes */}
+        <div className="hidden md:block overflow-x-auto border border-slate-200 rounded-lg">
+          <table className="w-full text-left border-collapse text-sm">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-600">
+              <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
                 <th className="py-2.5 px-3">Ngày</th>
                 <th className="py-2.5 px-3">Nhân sự</th>
                 <th className="py-2.5 px-3">Ca làm</th>
@@ -825,7 +787,7 @@ export function AttendanceTab({
                     <td className="py-2.5 px-3 text-slate-700">{record.shiftName}</td>
                     <td className="py-2.5 px-3 whitespace-nowrap">
                       <span
-                        className={`inline-block px-2 py-0.5 text-[11px] font-medium rounded border ${
+                        className={`inline-block px-2 py-0.5 text-xs font-medium rounded border ${
                           NOTE_TYPE_BADGE[note.type] || NOTE_TYPE_BADGE.note
                         }`}
                       >
@@ -841,6 +803,36 @@ export function AttendanceTab({
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* Mobile Portrait Cards for shift notes */}
+        <div className="md:hidden border border-slate-200 rounded-lg divide-y divide-slate-100">
+          {shiftNoteTableRows.length === 0 ? (
+            <p className="py-5 px-3 text-center text-sm text-slate-500">
+              Chưa có ghi chú Tăng ca / Về sớm / Clear giờ.
+            </p>
+          ) : (
+            shiftNoteTableRows.slice(0, 15).map(({ record, note }) => (
+              <div key={`${record.id}_${note.id}`} className="p-3.5 space-y-1.5 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`inline-block px-2 py-0.5 text-xs font-semibold rounded border ${
+                      NOTE_TYPE_BADGE[note.type] || NOTE_TYPE_BADGE.note
+                    }`}
+                  >
+                    {NOTE_TYPE_LABELS[note.type] || note.type}
+                  </span>
+                  <span className="font-mono text-xs text-slate-500 tabular-nums">
+                    {record.workDate} · {formatTimeHms(note.createdAt)}
+                  </span>
+                </div>
+                <p className="font-bold text-slate-900">
+                  {record.employeeName} — {record.shiftName}
+                </p>
+                <p className="text-slate-700">{note.content}</p>
+              </div>
+            ))
+          )}
         </div>
       </div>
 
@@ -908,16 +900,15 @@ export function AttendanceTab({
           )}
         </div>
 
-        {/* Tracking Table */}
-        <div className="overflow-x-auto">
+        {/* Desktop Tracking Table */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse text-sm">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-600">
+              <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
                 <th className="py-3 px-4">Ngày</th>
                 <th className="py-3 px-4">Nhân sự</th>
                 <th className="py-3 px-4">Ca làm</th>
-                <th className="py-3 px-4">Giờ vào</th>
-                <th className="py-3 px-4">Giờ ra</th>
+                <th className="py-3 px-4">Thời gian xác nhận</th>
                 <th className="py-3 px-4">Trạng thái</th>
                 <th className="py-3 px-4">Lịch sử ghi chú</th>
                 <th className="py-3 px-4 text-right">Thao tác</th>
@@ -927,14 +918,14 @@ export function AttendanceTab({
               {loading ? (
                 Array.from({ length: 4 }).map((_, i) => (
                   <tr key={i}>
-                    <td colSpan={8} className="py-4 px-4">
+                    <td colSpan={7} className="py-4 px-4">
                       <div className="h-5 bg-slate-100 rounded animate-pulse" />
                     </td>
                   </tr>
                 ))
               ) : rows.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-10 px-4 text-center text-sm text-slate-500">
+                  <td colSpan={7} className="py-10 px-4 text-center text-sm text-slate-500">
                     Chưa có bản ghi chấm công nào khớp bộ lọc.
                   </td>
                 </tr>
@@ -948,20 +939,24 @@ export function AttendanceTab({
                         {r.workDate}
                       </td>
                       <td className="py-3 px-4">
-                        <p className="font-medium text-slate-900">{r.employeeName}</p>
+                        <p className="font-semibold text-slate-900">{r.employeeName}</p>
                         <p className="text-xs text-slate-500 font-mono">{r.ownerEmail}</p>
                       </td>
                       <td className="py-3 px-4">
-                        <p className="text-slate-900">{r.shiftName}</p>
+                        <p className="text-slate-900 font-medium">{r.shiftName}</p>
                         {r.isUnscheduled && (
                           <span className="text-[11px] font-medium text-amber-700">Ngoài lịch</span>
                         )}
                       </td>
                       <td className="py-3 px-4 font-mono text-xs text-slate-800 tabular-nums whitespace-nowrap">
-                        {formatTimeHms(r.checkInAt)}
-                      </td>
-                      <td className="py-3 px-4 font-mono text-xs text-slate-600 tabular-nums whitespace-nowrap">
-                        {r.checkOutAt ? formatTimeHms(r.checkOutAt) : '—'}
+                        <p className="font-semibold text-emerald-700">
+                          {formatTimeHms(r.checkInAt)}
+                        </p>
+                        {r.checkOutAt && (
+                          <p className="text-[11px] text-slate-500">
+                            Kết: {formatTimeHms(r.checkOutAt)}
+                          </p>
+                        )}
                       </td>
                       <td className="py-3 px-4 whitespace-nowrap">
                         <span
@@ -988,19 +983,6 @@ export function AttendanceTab({
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="inline-flex items-center justify-end gap-1.5">
-                          {editable && !r.checkOutAt && (
-                            <button
-                              type="button"
-                              disabled={submitting}
-                              onClick={() => void handleQuickCheckout(r)}
-                              title="Xác nhận kết ca theo giờ thực tế"
-                              className="min-h-[34px] px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-medium text-emerald-700 hover:bg-emerald-100 inline-flex items-center gap-1"
-                            >
-                              <CheckOutIcon className="h-3.5 w-3.5" />
-                              <span>Kết ca</span>
-                            </button>
-                          )}
-
                           {editable && (
                             <button
                               type="button"
@@ -1008,10 +990,10 @@ export function AttendanceTab({
                                 setNoteTarget(r);
                                 setNoteType('note');
                                 setNoteContent('');
-                                setMarkCheckout(!r.checkOutAt);
+                                setMarkCheckout(false);
                                 setClearCheckoutInModal(false);
                               }}
-                              title="Ghi chú phát sinh / Kết ca"
+                              title="Ghi chú phát sinh"
                               className="min-h-[34px] px-2.5 py-1 rounded-lg border border-slate-300 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1"
                             >
                               <History className="h-3.5 w-3.5" />
@@ -1051,6 +1033,108 @@ export function AttendanceTab({
           </table>
         </div>
 
+        {/* Mobile Portrait Vertical Cards */}
+        <div className="md:hidden divide-y divide-slate-200">
+          {loading ? (
+            <div className="p-6 text-center text-sm text-slate-500">
+              Đang tải dữ liệu chấm công...
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="p-8 text-center text-sm text-slate-500">
+              Chưa có bản ghi chấm công nào khớp bộ lọc.
+            </div>
+          ) : (
+            rows.map((r) => {
+              const badge = STATUS_BADGE[r.status] || STATUS_BADGE.checked_in;
+              const editable = canModifyRecord(r);
+              return (
+                <div key={r.id} className="p-4 space-y-2.5 text-[15px]">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-bold text-slate-900">{r.employeeName}</p>
+                      <p className="text-xs font-mono text-slate-500 truncate">{r.ownerEmail}</p>
+                    </div>
+                    <span
+                      className={`inline-block px-2 py-0.5 text-xs font-semibold rounded border shrink-0 ${badge.cls}`}
+                    >
+                      {badge.label}
+                    </span>
+                  </div>
+
+                  <div className="rounded-lg bg-slate-50 p-3 space-y-1.5 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500">Ngày / Giờ xác nhận:</span>
+                      <span className="font-mono font-bold text-emerald-700 tabular-nums">
+                        {r.workDate} · {formatTimeHms(r.checkInAt)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500">Ca làm:</span>
+                      <span className="font-semibold text-slate-900 text-right">{r.shiftName}</span>
+                    </div>
+                    {r.checkOutAt && (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-slate-500">Giờ điều chỉnh:</span>
+                        <span className="font-mono text-slate-700 tabular-nums">
+                          {formatTimeHms(r.checkOutAt)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {r.notesHistory.length > 0 && (
+                    <div className="space-y-1 text-xs text-slate-700 bg-white border border-slate-200 rounded-lg p-2.5">
+                      {r.notesHistory.map((n) => (
+                        <p key={n.id}>
+                          <span className="font-semibold text-slate-900">
+                            [{NOTE_TYPE_LABELS[n.type] || n.type}]
+                          </span>{' '}
+                          {n.content}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+
+                  {editable && (
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNoteTarget(r);
+                          setNoteType('note');
+                          setNoteContent('');
+                          setMarkCheckout(false);
+                          setClearCheckoutInModal(false);
+                        }}
+                        className="min-h-[38px] px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 inline-flex items-center gap-1"
+                      >
+                        <History className="h-3.5 w-3.5" />
+                        <span>Ghi chú</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(r)}
+                        className="min-h-[38px] px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-xs font-semibold text-blue-700 inline-flex items-center gap-1"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        <span>Điều chỉnh</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(r)}
+                        className="min-h-[38px] px-3 py-1.5 rounded-lg border border-red-200 bg-red-50 text-xs font-semibold text-red-600 inline-flex items-center gap-1 ml-auto"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>Xóa</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+
         <PaginationBar
           page={page}
           pageSize={pageSize}
@@ -1073,7 +1157,7 @@ export function AttendanceTab({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-slate-900 font-bold">
                 <Clock className="h-5 w-5 text-blue-600" />
-                <span>Bổ sung ghi chú / Kết ca</span>
+                <span>Bổ sung ghi chú ca làm</span>
               </div>
               <button
                 type="button"
@@ -1135,7 +1219,7 @@ export function AttendanceTab({
                   />
                   <span className="inline-flex items-center gap-1">
                     <CheckOutIcon className="h-4 w-4 text-slate-600" />
-                    Chốt giờ kết ca ngay lúc này ({formatTimeHms(nowClock)})
+                    Ghi nhận thêm mốc giờ lúc này ({formatTimeHms(nowClock)})
                   </span>
                 </label>
               )}
@@ -1152,7 +1236,7 @@ export function AttendanceTab({
                 />
                 <span className="inline-flex items-center gap-1">
                   <Eraser className="h-4 w-4 text-violet-600" />
-                  Clear giờ ra (xóa giờ kết ca để chấm lại)
+                  Clear giờ (xóa mốc giờ thêm)
                 </span>
               </label>
             </div>
@@ -1240,7 +1324,7 @@ export function AttendanceTab({
 
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Giờ vào ca
+                  Thời gian xác nhận ca
                 </label>
                 <div className="space-y-1">
                   <input
@@ -1262,7 +1346,7 @@ export function AttendanceTab({
 
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Giờ ra ca (để trống nếu Clear giờ)
+                  Giờ kết thúc (tùy chọn / để trống nếu Clear giờ)
                 </label>
                 <div className="space-y-1">
                   <input
@@ -1289,7 +1373,7 @@ export function AttendanceTab({
                       }}
                       className="text-[11px] font-medium text-violet-700 hover:underline"
                     >
-                      Clear giờ ra
+                      Clear giờ
                     </button>
                   </div>
                 </div>
@@ -1304,8 +1388,7 @@ export function AttendanceTab({
                   onChange={(e) => setEditStatus(e.target.value as AttendanceRecord['status'])}
                   className="w-full min-h-[40px] px-3 py-1.5 text-sm border border-slate-300 rounded-lg bg-white"
                 >
-                  <option value="checked_in">Đang trong ca</option>
-                  <option value="checked_out">Đã kết ca</option>
+                  <option value="checked_in">Đã xác nhận ca</option>
                   <option value="overtime">Tăng ca</option>
                   <option value="early_leave">Về sớm</option>
                   <option value="clear_time">Clear giờ</option>

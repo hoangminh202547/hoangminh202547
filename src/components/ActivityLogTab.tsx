@@ -1,6 +1,10 @@
 import { useMemo, useState } from 'react';
-import { History, Search } from 'lucide-react';
-import { ROLE_LABELS } from '../lib/permissions';
+import { History, Info, Search } from 'lucide-react';
+import {
+  ACTIVITY_LOG_RETENTION_DAYS,
+  ROLE_LABELS,
+  filterLogsLast60Days,
+} from '../lib/permissions';
 import type { ActivityAction, ActivityLog, ActivityModule } from '../types';
 
 interface ActivityLogTabProps {
@@ -53,9 +57,11 @@ export function ActivityLogTab({ logs, loading }: ActivityLogTabProps) {
   const [moduleFilter, setModuleFilter] = useState<'ALL' | ActivityModule>('ALL');
   const [actionFilter, setActionFilter] = useState<'ALL' | ActivityAction>('ALL');
 
+  const recentLogs = useMemo(() => filterLogsLast60Days(logs), [logs]);
+
   const filteredLogs = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return logs.filter((log) => {
+    return recentLogs.filter((log) => {
       const matchModule = moduleFilter === 'ALL' || log.module === moduleFilter;
       const matchAction = actionFilter === 'ALL' || log.action === actionFilter;
       const matchSearch =
@@ -65,22 +71,30 @@ export function ActivityLogTab({ logs, loading }: ActivityLogTabProps) {
         log.actorName.toLowerCase().includes(q);
       return matchModule && matchAction && matchSearch;
     });
-  }, [logs, moduleFilter, actionFilter, searchQuery]);
+  }, [recentLogs, moduleFilter, actionFilter, searchQuery]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-center gap-2.5 text-sm text-blue-950">
+        <Info className="h-4 w-4 text-blue-600 shrink-0" />
+        <p>
+          <strong>Chính sách lưu trữ:</strong> Nhật ký hoạt động chỉ lưu trữ và hiển thị dữ liệu trong{' '}
+          <strong>{ACTIVITY_LOG_RETENTION_DAYS} ngày gần nhất</strong>. Các bản ghi cũ hơn 60 ngày được hệ thống tự động dọn dẹp.
+        </p>
+      </div>
+
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <p className="text-xs font-medium text-slate-500">Tổng nhật ký ghi nhận</p>
+          <p className="text-xs font-medium text-slate-500">Tổng nhật ký (60 ngày)</p>
           <p className="mt-1 text-2xl font-bold text-slate-900 tabular-nums">
-            {logs.length}
+            {recentLogs.length}
           </p>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-4">
           <p className="text-xs font-medium text-slate-500">Thao tác vận hành</p>
           <p className="mt-1 text-2xl font-bold text-blue-600 tabular-nums">
             {
-              logs.filter((l) =>
+              recentLogs.filter((l) =>
                 ['schedule', 'attendance', 'staff', 'feedback'].includes(l.module)
               ).length
             }
@@ -90,7 +104,7 @@ export function ActivityLogTab({ logs, loading }: ActivityLogTabProps) {
           <p className="text-xs font-medium text-slate-500">Thao tác hàng hóa</p>
           <p className="mt-1 text-2xl font-bold text-emerald-600 tabular-nums">
             {
-              logs.filter((l) =>
+              recentLogs.filter((l) =>
                 ['barcode', 'warehouse', 'expiry', 'returns', 'promotions'].includes(
                   l.module
                 )
@@ -102,7 +116,7 @@ export function ActivityLogTab({ logs, loading }: ActivityLogTabProps) {
           <p className="text-xs font-medium text-slate-500">Hệ thống &amp; Phân quyền</p>
           <p className="mt-1 text-2xl font-bold text-slate-900 tabular-nums">
             {
-              logs.filter((l) =>
+              recentLogs.filter((l) =>
                 ['access', 'storage', 'system', 'export'].includes(l.module)
               ).length
             }

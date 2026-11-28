@@ -291,7 +291,7 @@ export function StorageManagerTab({
           )}
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse text-sm">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-600">
@@ -376,6 +376,64 @@ export function StorageManagerTab({
               )}
             </tbody>
           </table>
+        </div>
+
+        <div className="md:hidden divide-y divide-slate-200">
+          {loading ? (
+            <div className="p-6 text-center text-sm text-slate-500">
+              Đang đọc metadata bucket {STORAGE_BUCKET}...
+            </div>
+          ) : pagedFiles.length === 0 ? (
+            <div className="p-8 text-center text-sm text-slate-500">
+              Không có tệp nào khớp điều kiện lọc.
+            </div>
+          ) : (
+            pagedFiles.map((f) => {
+              const isReferenced = referencedPaths.has(f.path);
+              const canDeleteThis = canManageAll || f.ownerFolder === user.uid;
+              return (
+                <div key={f.path} className="p-4 space-y-2 text-[15px]">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start gap-2 min-w-0">
+                      <input
+                        type="checkbox"
+                        disabled={isReferenced || !canDeleteThis}
+                        checked={selectedPaths.has(f.path)}
+                        onChange={(e) => {
+                          setSelectedPaths((prev) => {
+                            const next = new Set(prev);
+                            if (e.target.checked) next.add(f.path);
+                            else next.delete(f.path);
+                            return next;
+                          });
+                        }}
+                        className="mt-1 h-4 w-4 rounded border-slate-300 disabled:opacity-35 shrink-0"
+                      />
+                      <span className="font-mono text-xs text-slate-900 break-all">{f.path}</span>
+                    </div>
+                    {f.category === 'image' && (
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenPreview(f)}
+                        className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:text-blue-600 shrink-0"
+                        title="Xem ảnh"
+                      >
+                        <Eye className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="rounded-lg bg-slate-50 p-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="uppercase font-semibold text-slate-700">
+                      {f.category} · {formatBytes(f.sizeBytes)}
+                    </span>
+                    <span className={isReferenced ? 'text-emerald-700 font-semibold' : 'text-amber-700 font-semibold'}>
+                      {isReferenced ? 'Đang dùng (bảo vệ)' : 'Không còn tham chiếu'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
 
         <PaginationBar

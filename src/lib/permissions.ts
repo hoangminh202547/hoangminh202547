@@ -295,3 +295,56 @@ export function resolveModuleAccessFlags(
   }
   return base;
 }
+
+export const ACTIVITY_LOG_RETENTION_DAYS = 60;
+
+export function getActivityLogCutoffIso(nowMs = Date.now()): string {
+  return new Date(nowMs - ACTIVITY_LOG_RETENTION_DAYS * 86_400_000).toISOString();
+}
+
+export function filterLogsLast60Days<T extends { createdAt: string }>(logs: T[]): T[] {
+  const cutoffMs = Date.now() - ACTIVITY_LOG_RETENTION_DAYS * 86_400_000;
+  return logs.filter((log) => {
+    if (!log.createdAt) return false;
+    const ts = new Date(log.createdAt).getTime();
+    return Number.isFinite(ts) && ts >= cutoffMs;
+  });
+}
+
+export function extractShortStaffName(
+  displayName?: string | null,
+  email?: string | null
+): string {
+  const cleanName = String(displayName || '').trim().replace(/\s+/g, ' ');
+  if (cleanName) {
+    const parts = cleanName.split(' ').filter(Boolean);
+    if (parts.length >= 2) {
+      return parts.slice(-2).join(' ');
+    }
+    return parts[0];
+  }
+  const cleanEmail = String(email || '').trim();
+  if (cleanEmail.includes('@')) {
+    return cleanEmail.split('@')[0];
+  }
+  return cleanEmail;
+}
+
+export function extractNoticeMonthsFromPolicy(
+  returnPolicy?: string | null,
+  fallbackMonths = 0
+): number {
+  const text = String(returnPolicy || '').trim();
+  if (text) {
+    const match = /(\d+)\s*tháng/i.exec(text);
+    if (match) {
+      const parsed = Number(match[1]);
+      if (Number.isFinite(parsed) && parsed > 0 && parsed <= 36) {
+        return Math.round(parsed);
+      }
+    }
+  }
+  const fb = Number(fallbackMonths || 0);
+  return Number.isFinite(fb) && fb > 0 ? Math.min(36, Math.round(fb)) : 0;
+}
+

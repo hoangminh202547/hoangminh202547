@@ -111,17 +111,49 @@ function drawRoundRect(
   ctx.closePath();
 }
 
-function clipText(
+function wrapCanvasLines(
   ctx: CanvasRenderingContext2D,
   text: string,
   maxWidth: number
-): string {
-  if (ctx.measureText(text).width <= maxWidth) return text;
-  let s = text;
-  while (s.length > 0 && ctx.measureText(`${s}…`).width > maxWidth) {
-    s = s.slice(0, -1);
+): string[] {
+  const raw = String(text ?? '').trim();
+  if (!raw) return [];
+  const effectiveMax = Math.max(24, maxWidth);
+  const paragraphs = raw.split(/\r?\n/);
+  const lines: string[] = [];
+
+  for (const para of paragraphs) {
+    const words = para.split(/\s+/).filter(Boolean);
+    if (words.length === 0) continue;
+    let current = '';
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (ctx.measureText(candidate).width <= effectiveMax) {
+        current = candidate;
+      } else {
+        if (current) {
+          lines.push(current);
+          current = '';
+        }
+        if (ctx.measureText(word).width <= effectiveMax) {
+          current = word;
+        } else {
+          let chunk = '';
+          for (const ch of word) {
+            if (ctx.measureText(chunk + ch).width > effectiveMax && chunk) {
+              lines.push(chunk);
+              chunk = ch;
+            } else {
+              chunk += ch;
+            }
+          }
+          current = chunk;
+        }
+      }
+    }
+    if (current) lines.push(current);
   }
-  return s ? `${s}…` : '';
+  return lines;
 }
 
 function computeDailySummary(
@@ -181,35 +213,95 @@ export function renderScheduleMatrixCanvas(params: {
     year: 'numeric',
   }).format(new Date());
 
+  const measureCanvas = document.createElement('canvas');
+  const mCtx = measureCanvas.getContext('2d');
+  if (!mCtx) throw new Error('Không thể khởi tạo Canvas.');
+
   if (layout === 'desktop') {
     const padX = 28;
     const padY = 24;
     const bannerH = 78;
-    const headerRowH = 50;
-    const staffColW = 196;
-    const dayColW = 152;
+    const headerRowH = 52;
+    const staffColW = 216;
+    const dayColW = 164;
     const tableW = staffColW + dayColW * 7;
     const canvasW = tableW + padX * 2;
-    const cardH = showNotes ? 50 : 36;
     const cardGap = 6;
     const cellPadY = 8;
 
-    const rowHeights = rows.map((row) => {
-      let maxCards = 1;
-      for (const d of weekDays) {
-        const count = (row.byDate.get(d.ymd) || []).length;
-        if (count > maxCards) maxCards = count;
-      }
-      return Math.max(58, maxCards * cardH + Math.max(0, maxCards - 1) * cardGap + cellPadY * 2);
+    const rowLayouts = rows.map((row) => {
+      mCtx.font = '700 13px Roboto, sans-serif';
+      const nameLines = wrapCanvasLines(mCtx, row.staff.name, staffColW - 24);
+      mCtx.font = '400 11.5px Roboto, sans-serif';
+      const deptLines = wrapCanvasLines(
+        mCtx,
+        row.staff.department || 'Nhân viên',
+        staffColW - 24
+      );
+      const staffBlockH =
+        12 + nameLines.length * 17 + deptLines.length * 15 + 10;
+
+      const dayCards = weekDays.map((d) => {
+        const items = row.byDate.get(d.ymd) || [];
+        return items.map((shift) => {
+          const meta = getShiftMeta(shift.shiftType);
+          const sw = dayColW - 12;
+          mCtx.font = '700 11.5px Roboto, sans-serif';
+          const titleMaxW = shift.isTrucDam ? sw - 42 : sw - 14;
+          const titleLines = wrapCanvasLines(mCtx, meta.shortLabel, titleMaxW);
+          mCtx.font = '400 10.5px Roboto, sans-serif';
+          const noteLines =
+            showNotes && shift.note
+              ? wrapCanvasLines(mCtx, shift.note, sw - 14)
+              : [];
+          const cardH =
+            8 +
+            Math.max(1, titleLines.length) * 14 +
+            14 +
+            (noteLines.length > 0 ? 4 + noteLines.length * 13 : 0) +
+            6;
+          return { shift, meta, titleLines, noteLines, cardH };
+        });
+      });
+
+      const maxDayColH = Math.max(
+        0,
+        ...dayCards.map(
+          (cards) =>
+            cards.reduce((s, c) => s + c.cardH, 0) +
+            Math.max(0, cards.length - 1) * cardGap +
+            cellPadY * 2
+        )
+      );
+      const height = Math.max(58, staffBlockH, maxDayColH);
+      return { nameLines, deptLines, dayCards, height };
     });
 
-    const maxFooterLines = Math.max(
-      1,
-      ...weekDays.map((d) => computeDailySummary(rows, d.ymd).lines.length)
-    );
-    const footerRowH = Math.max(44, 16 + maxFooterLines * 15);
+    const footerSummaries = weekDays.map((d) => {
+      const sum = computeDailySummary(rows, d.ymd);
+      mCtx.font = '600 11px Roboto, sans-serif';
+      const wrapped = sum.parts
+        .join(' · ')
+        .split(' · ');
+      const lines: string[] = [];
+      let cur = '';
+      for (const token of wrapped) {
+        const cand = cur ? `${cur} · ${token}` : token;
+        if (mCtx.measureText(cand).width <= dayColW - 14) {
+          cur = cand;
+        } else {
+          if (cur) lines.push(cur);
+          cur = token;
+        }
+      }
+      if (cur) lines.push(cur);
+      return lines.length > 0 ? lines : ['0 ca'];
+    });
+
+    const maxFooterLines = Math.max(1, ...footerSummaries.map((l) => l.length));
+    const footerRowH = Math.max(46, 18 + maxFooterLines * 15);
     const totalRowsH =
-      rows.length > 0 ? rowHeights.reduce((a, b) => a + b, 0) : 64;
+      rows.length > 0 ? rowLayouts.reduce((a, b) => a + b.height, 0) : 64;
     const canvasH =
       padY + bannerH + 16 + headerRowH + totalRowsH + footerRowH + padY + 24;
 
@@ -242,7 +334,7 @@ export function renderScheduleMatrixCanvas(params: {
 
     ctx.textAlign = 'right';
     ctx.fillStyle = '#94A3B8';
-    ctx.font = '400 11px Roboto, sans-serif';
+    ctx.font = '400 11.5px Roboto, sans-serif';
     ctx.fillText(`Cập nhật: ${generatedLabel}`, padX + tableW - 18, padY + 56);
     ctx.textAlign = 'left';
 
@@ -257,7 +349,7 @@ export function renderScheduleMatrixCanvas(params: {
 
     ctx.fillStyle = '#0F172A';
     ctx.font = '700 13px Roboto, sans-serif';
-    ctx.fillText('Họ và tên / Chức vụ', padX + 14, tableY + 30);
+    ctx.fillText('Họ và tên / Chức vụ', padX + 14, tableY + 31);
 
     weekDays.forEach((d, idx) => {
       const cx = padX + staffColW + idx * dayColW;
@@ -275,11 +367,11 @@ export function renderScheduleMatrixCanvas(params: {
       ctx.textAlign = 'center';
       ctx.fillStyle = d.isWeekend ? '#92400E' : '#0F172A';
       ctx.font = '700 13px Roboto, sans-serif';
-      ctx.fillText(d.weekday, cx + dayColW / 2, tableY + 21);
+      ctx.fillText(d.weekday, cx + dayColW / 2, tableY + 22);
 
       ctx.fillStyle = d.isWeekend ? '#B45309' : '#64748B';
-      ctx.font = '500 11px Roboto, sans-serif';
-      ctx.fillText(d.ddMm, cx + dayColW / 2, tableY + 38);
+      ctx.font = '500 11.5px Roboto, sans-serif';
+      ctx.fillText(d.ddMm, cx + dayColW / 2, tableY + 40);
     });
     ctx.textAlign = 'left';
 
@@ -295,26 +387,30 @@ export function renderScheduleMatrixCanvas(params: {
       ctx.textAlign = 'left';
       curY += 64;
     } else {
-      rows.forEach((row, rIdx) => {
-        const rh = rowHeights[rIdx];
+      rows.forEach((_, rIdx) => {
+        const layoutRow = rowLayouts[rIdx];
+        const rh = layoutRow.height;
         ctx.fillStyle = rIdx % 2 === 1 ? '#F8FAFC' : '#FFFFFF';
         ctx.fillRect(padX, curY, tableW, rh);
         ctx.strokeStyle = '#E2E8F0';
         ctx.strokeRect(padX, curY, tableW, rh);
 
-        // Staff column
+        // Staff column (wrapped cleanly)
+        let syText = curY + 22;
         ctx.fillStyle = '#0F172A';
         ctx.font = '700 13px Roboto, sans-serif';
-        ctx.fillText(clipText(ctx, row.staff.name, staffColW - 22), padX + 12, curY + 24);
+        layoutRow.nameLines.forEach((line) => {
+          ctx.fillText(line, padX + 12, syText);
+          syText += 17;
+        });
         ctx.fillStyle = '#64748B';
-        ctx.font = '400 11px Roboto, sans-serif';
-        ctx.fillText(
-          clipText(ctx, row.staff.department || 'Nhân viên', staffColW - 22),
-          padX + 12,
-          curY + 42
-        );
+        ctx.font = '400 11.5px Roboto, sans-serif';
+        layoutRow.deptLines.forEach((line) => {
+          ctx.fillText(line, padX + 12, syText);
+          syText += 15;
+        });
 
-        weekDays.forEach((d, dIdx) => {
+        weekDays.forEach((_, dIdx) => {
           const cx = padX + staffColW + dIdx * dayColW;
           ctx.beginPath();
           ctx.moveTo(cx, curY);
@@ -322,11 +418,12 @@ export function renderScheduleMatrixCanvas(params: {
           ctx.strokeStyle = '#E2E8F0';
           ctx.stroke();
 
-          const items = row.byDate.get(d.ymd) || [];
-          items.forEach((shift, sIdx) => {
-            const meta = getShiftMeta(shift.shiftType);
+          const cards = layoutRow.dayCards[dIdx];
+          let cardTop = curY + cellPadY;
+          cards.forEach((c) => {
+            const { shift, meta, titleLines, noteLines, cardH } = c;
             const sx = cx + 6;
-            const sy = curY + cellPadY + sIdx * (cardH + cardGap);
+            const sy = cardTop;
             const sw = dayColW - 12;
 
             drawRoundRect(ctx, sx, sy, sw, cardH, 6);
@@ -337,9 +434,12 @@ export function renderScheduleMatrixCanvas(params: {
             ctx.stroke();
 
             ctx.fillStyle = meta.hexText;
-            ctx.font = '700 11px Roboto, sans-serif';
-            const titleMaxW = shift.isTrucDam ? sw - 42 : sw - 14;
-            ctx.fillText(clipText(ctx, meta.shortLabel, titleMaxW), sx + 7, sy + 15);
+            ctx.font = '700 11.5px Roboto, sans-serif';
+            let innerY = sy + 16;
+            titleLines.forEach((tl) => {
+              ctx.fillText(tl, sx + 7, innerY);
+              innerY += 14;
+            });
 
             if (shift.isTrucDam) {
               drawRoundRect(ctx, sx + sw - 31, sy + 4, 25, 15, 4);
@@ -353,17 +453,23 @@ export function renderScheduleMatrixCanvas(params: {
             }
 
             ctx.fillStyle = meta.hexAccent;
-            ctx.font = '500 10px Roboto, sans-serif';
+            ctx.font = '500 10.5px Roboto, sans-serif';
             const timeText = meta.isOffDay
               ? 'Nghỉ'
               : `${shift.startTime}–${shift.endTime}`;
-            ctx.fillText(timeText, sx + 7, sy + 29);
+            ctx.fillText(timeText, sx + 7, innerY);
+            innerY += 14;
 
-            if (showNotes && shift.note) {
-              ctx.fillStyle = '#475569';
-              ctx.font = '400 10px Roboto, sans-serif';
-              ctx.fillText(clipText(ctx, shift.note, sw - 14), sx + 7, sy + 43);
+            if (noteLines.length > 0) {
+              ctx.fillStyle = '#334155';
+              ctx.font = '400 10.5px Roboto, sans-serif';
+              noteLines.forEach((nl) => {
+                ctx.fillText(nl, sx + 7, innerY);
+                innerY += 13;
+              });
             }
+
+            cardTop += cardH + cardGap;
           });
         });
 
@@ -378,10 +484,10 @@ export function renderScheduleMatrixCanvas(params: {
     ctx.strokeRect(padX, curY, tableW, footerRowH);
 
     ctx.fillStyle = '#0F172A';
-    ctx.font = '700 12px Roboto, sans-serif';
+    ctx.font = '700 12.5px Roboto, sans-serif';
     ctx.fillText('Tổng hợp trong ngày', padX + 12, curY + 26);
 
-    weekDays.forEach((d, idx) => {
+    weekDays.forEach((_, idx) => {
       const cx = padX + staffColW + idx * dayColW;
       ctx.beginPath();
       ctx.moveTo(cx, curY);
@@ -389,13 +495,13 @@ export function renderScheduleMatrixCanvas(params: {
       ctx.strokeStyle = '#CBD5E1';
       ctx.stroke();
 
-      const sum = computeDailySummary(rows, d.ymd);
+      const lines = footerSummaries[idx];
       ctx.textAlign = 'center';
-      ctx.fillStyle = '#334155';
-      ctx.font = '600 10.5px Roboto, sans-serif';
-      const startLineY = curY + (footerRowH - (sum.lines.length - 1) * 14) / 2 + 4;
-      sum.lines.forEach((line, lIdx) => {
-        ctx.fillText(clipText(ctx, line, dayColW - 10), cx + dayColW / 2, startLineY + lIdx * 14);
+      ctx.fillStyle = '#1E293B';
+      ctx.font = '600 11px Roboto, sans-serif';
+      const startLineY = curY + (footerRowH - (lines.length - 1) * 15) / 2 + 4;
+      lines.forEach((line, lIdx) => {
+        ctx.fillText(line, cx + dayColW / 2, startLineY + lIdx * 15);
       });
     });
     ctx.textAlign = 'left';
@@ -403,29 +509,56 @@ export function renderScheduleMatrixCanvas(params: {
     return canvas;
   }
 
-  // Mobile vertical card layout
+  // Mobile vertical card layout (wrapped, zero truncation)
   const padX = 20;
   const padY = 20;
-  const canvasW = 540;
+  const canvasW = 580;
   const innerW = canvasW - padX * 2;
-  const bannerH = 82;
+  const bannerH = 84;
   const cardGap = 14;
 
-  const dayHeights = weekDays.map((d) => {
-    const entries: Array<{ staff: ScheduleStaffMember; shift: OfficialWorkSchedule }> = [];
+  const dayLayouts = weekDays.map((d) => {
+    const entries: Array<{
+      staff: ScheduleStaffMember;
+      shift: OfficialWorkSchedule;
+      meta: ReturnType<typeof getShiftMeta>;
+      noteLines: string[];
+      cardH: number;
+    }> = [];
+
+    const rw = innerW - 24;
     for (const row of rows) {
       const items = row.byDate.get(d.ymd) || [];
-      for (const s of items) entries.push({ staff: row.staff, shift: s });
+      for (const s of items) {
+        const meta = getShiftMeta(s.shiftType);
+        mCtx.font = '400 11px Roboto, sans-serif';
+        const noteLines =
+          showNotes && s.note
+            ? wrapCanvasLines(mCtx, `Ghi chú: ${s.note}`, rw - 20)
+            : [];
+        const cardH = 38 + (noteLines.length > 0 ? noteLines.length * 14 + 6 : 0);
+        entries.push({ staff: row.staff, shift: s, meta, noteLines, cardH });
+      }
     }
-    const rowH = showNotes ? 50 : 36;
-    return 44 + Math.max(1, entries.length) * (rowH + 6) + 14;
+
+    const sum = computeDailySummary(rows, d.ymd);
+    mCtx.font = '600 11px Roboto, sans-serif';
+    const sumLines = wrapCanvasLines(mCtx, sum.parts.join(' · '), innerW - 28);
+    const headerH = 32 + sumLines.length * 15 + 6;
+    const entriesH =
+      entries.length === 0
+        ? 38
+        : entries.reduce((acc, e) => acc + e.cardH, 0) +
+          Math.max(0, entries.length - 1) * 6;
+    const totalH = headerH + 10 + entriesH + 14;
+    return { entries, sumLines, headerH, totalH };
   });
 
   const canvasH =
     padY +
     bannerH +
     16 +
-    dayHeights.reduce((a, b) => a + b, 0) +
+    dayLayouts.reduce((a, b) => a + b.totalH, 0) +
     (weekDays.length - 1) * cardGap +
     padY;
 
@@ -445,106 +578,101 @@ export function renderScheduleMatrixCanvas(params: {
   ctx.fill();
 
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '700 17px Roboto, sans-serif';
+  ctx.font = '700 17.5px Roboto, sans-serif';
   ctx.fillText('LỊCH LÀM VIỆC TUẦN CHÍNH THỨC', padX + 16, padY + 30);
 
   ctx.fillStyle = '#CBD5E1';
-  ctx.font = '400 12px Roboto, sans-serif';
+  ctx.font = '400 12.5px Roboto, sans-serif';
   ctx.fillText(`Tuần: ${weekRangeLabel} · ${rows.length} nhân sự`, padX + 16, padY + 52);
 
   ctx.fillStyle = '#94A3B8';
-  ctx.font = '400 10px Roboto, sans-serif';
-  ctx.fillText(`Cập nhật: ${generatedLabel}`, padX + 16, padY + 70);
+  ctx.font = '400 10.5px Roboto, sans-serif';
+  ctx.fillText(`Cập nhật: ${generatedLabel}`, padX + 16, padY + 71);
 
   let curY = padY + bannerH + 16;
 
   weekDays.forEach((d, dIdx) => {
-    const dh = dayHeights[dIdx];
+    const dl = dayLayouts[dIdx];
+    const dh = dl.totalH;
     drawRoundRect(ctx, padX, curY, innerW, dh, 10);
     ctx.fillStyle = '#FFFFFF';
     ctx.fill();
-    ctx.strokeStyle = '#E2E8F0';
+    ctx.strokeStyle = '#CBD5E1';
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Day Header
-    drawRoundRect(ctx, padX, curY, innerW, 38, 10);
-    ctx.fillStyle = d.isWeekend ? '#FEF3C7' : '#F1F5F9';
+    // Day Header (multi-line safe so summary never overlaps weekday)
+    drawRoundRect(ctx, padX, curY, innerW, dl.headerH, 10);
+    ctx.fillStyle = d.isWeekend ? '#FEF3C7' : '#EFF6FF';
     ctx.fill();
 
     ctx.fillStyle = d.isWeekend ? '#92400E' : '#0F172A';
-    ctx.font = '700 13px Roboto, sans-serif';
-    ctx.fillText(`${d.weekday} · ${formatViDate(d.ymd)}`, padX + 14, curY + 24);
+    ctx.font = '700 13.5px Roboto, sans-serif';
+    ctx.fillText(`${d.weekday} · ${formatViDate(d.ymd)}`, padX + 14, curY + 23);
 
-    const sum = computeDailySummary(rows, d.ymd);
-    ctx.textAlign = 'right';
     ctx.fillStyle = '#475569';
-    ctx.font = '600 10.5px Roboto, sans-serif';
-    ctx.fillText(
-      clipText(ctx, sum.parts.join(' · '), innerW - 150),
-      padX + innerW - 14,
-      curY + 24
-    );
-    ctx.textAlign = 'left';
+    ctx.font = '600 11px Roboto, sans-serif';
+    dl.sumLines.forEach((sl, sIdx) => {
+      ctx.fillText(sl, padX + 14, curY + 41 + sIdx * 15);
+    });
 
-    const entries: Array<{ staff: ScheduleStaffMember; shift: OfficialWorkSchedule }> = [];
-    for (const row of rows) {
-      const items = row.byDate.get(d.ymd) || [];
-      for (const s of items) entries.push({ staff: row.staff, shift: s });
-    }
-
-    const rowH = showNotes ? 50 : 36;
-    if (entries.length === 0) {
+    if (dl.entries.length === 0) {
       ctx.fillStyle = '#94A3B8';
-      ctx.font = '400 12px Roboto, sans-serif';
-      ctx.fillText('Không có lịch phân công', padX + 14, curY + 64);
+      ctx.font = '400 12.5px Roboto, sans-serif';
+      ctx.fillText('Không có lịch phân công', padX + 14, curY + dl.headerH + 25);
     } else {
-      entries.forEach((entry, idx) => {
-        const meta = getShiftMeta(entry.shift.shiftType);
+      let entryY = curY + dl.headerH + 10;
+      dl.entries.forEach((entry) => {
+        const { meta, noteLines, cardH } = entry;
         const rx = padX + 12;
-        const ry = curY + 46 + idx * (rowH + 6);
+        const ry = entryY;
         const rw = innerW - 24;
 
-        drawRoundRect(ctx, rx, ry, rw, rowH, 8);
+        drawRoundRect(ctx, rx, ry, rw, cardH, 8);
         ctx.fillStyle = meta.hexBg;
         ctx.fill();
         ctx.strokeStyle = meta.hexBorder;
         ctx.stroke();
 
-        ctx.fillStyle = '#0F172A';
-        ctx.font = '700 12px Roboto, sans-serif';
-        ctx.fillText(clipText(ctx, entry.staff.name, 185), rx + 10, ry + 22);
-
         const timeLabel = meta.isOffDay
           ? meta.shortLabel
           : `${meta.shortLabel} (${entry.shift.startTime}–${entry.shift.endTime})`;
+        ctx.font = '700 11.5px Roboto, sans-serif';
+        const timeW = ctx.measureText(timeLabel).width;
+        const badgeOffset = entry.shift.isTrucDam ? 36 : 0;
+        const maxNameW = rw - timeW - badgeOffset - 28;
+
+        ctx.fillStyle = '#0F172A';
+        ctx.font = '700 12.5px Roboto, sans-serif';
+        const nameLines = wrapCanvasLines(ctx, entry.staff.name, Math.max(100, maxNameW));
+        ctx.fillText(nameLines[0] || entry.staff.name, rx + 10, ry + 23);
+
         ctx.textAlign = 'right';
         ctx.fillStyle = meta.hexText;
-        ctx.font = '700 11px Roboto, sans-serif';
-        const badgeOffset = entry.shift.isTrucDam ? 36 : 0;
-        ctx.fillText(timeLabel, rx + rw - 10 - badgeOffset, ry + 22);
+        ctx.font = '700 11.5px Roboto, sans-serif';
+        ctx.fillText(timeLabel, rx + rw - 10 - badgeOffset, ry + 23);
         ctx.textAlign = 'left';
 
         if (entry.shift.isTrucDam) {
-          drawRoundRect(ctx, rx + rw - 38, ry + 10, 28, 16, 4);
+          drawRoundRect(ctx, rx + rw - 38, ry + 10, 28, 17, 4);
           ctx.fillStyle = '#EA580C';
           ctx.fill();
           ctx.fillStyle = '#FFFFFF';
-          ctx.font = '700 9px Roboto, sans-serif';
+          ctx.font = '700 9.5px Roboto, sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText('TĐ', rx + rw - 24, ry + 21);
+          ctx.fillText('TĐ', rx + rw - 24, ry + 22);
           ctx.textAlign = 'left';
         }
 
-        if (showNotes && entry.shift.note) {
-          ctx.fillStyle = '#475569';
-          ctx.font = '400 10px Roboto, sans-serif';
-          ctx.fillText(
-            clipText(ctx, `Ghi chú: ${entry.shift.note}`, rw - 20),
-            rx + 10,
-            ry + 40
-          );
+        if (noteLines.length > 0) {
+          ctx.fillStyle = '#334155';
+          ctx.font = '400 11px Roboto, sans-serif';
+          noteLines.forEach((nl, nIdx) => {
+            ctx.fillText(nl, rx + 10, ry + 41 + nIdx * 14);
+          });
         }
+
+        entryY += cardH + 6;
       });
     }
 

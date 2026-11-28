@@ -1,7 +1,7 @@
 import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 import { useEffect, useRef } from 'react';
 import { appCache } from './cache';
-import { normalizeEmail } from './permissions';
+import { extractShortStaffName, normalizeEmail } from './permissions';
 import {
   formatSupabaseReadError,
   formatSupabaseWriteError,
@@ -562,6 +562,76 @@ export async function fetchUserProfiles(
   }));
   appCache.set('profiles:all', mapped, 60_000);
   return mapped;
+}
+
+export interface AuthorizedStaffOption {
+  email: string;
+  displayName: string;
+  shortName: string;
+  role?: string;
+}
+
+export async function fetchAuthorizedStaffOptions(
+  client: SupabaseClient,
+  fallbackMembers: Array<{ email: string; displayName: string; active: boolean; role?: string }> = []
+): Promise<AuthorizedStaffOption[]> {
+  const cached = appCache.get<AuthorizedStaffOption[]>('staff:short_options');
+  if (cached && cached.length > 0) return cached;
+
+  const byEmail = new Map<string, AuthorizedStaffOption>();
+  const register = (emailRaw: string, nameRaw: string, role?: string) => {
+    const email = normalizeEmail(emailRaw);
+    const displayName = String(nameRaw || '').trim();
+    const shortName = extractShortStaffName(displayName, email);
+    if (!shortName) return;
+    const key = email || shortName.toLowerCase();
+    const prev = byEmail.get(key);
+    if (!prev || (!prev.displayName && displayName)) {
+      byEmail.set(key, {
+        email,
+        displayName: displayName || shortName,
+        shortName,
+        role,
+      });
+    }
+  };
+
+  try {
+    recordClientDbOp();
+    const { data, error } = await client.rpc('get_authorized_staff_directory');
+    if (!error && Array.isArray(data) && data.length > 0) {
+      for (const row of data as Array<Record<string, unknown>>) {
+        register(
+          String(row.email || ''),
+          String(row.display_name || ''),
+          String(row.role || '')
+        );
+      }
+    }
+  } catch {
+    // RPC 007 not yet applied — fall back seamlessly to user_profiles + fallbackMembers
+  }
+
+  if (byEmail.size === 0) {
+    const profiles = await fetchUserProfiles(client);
+    for (const p of profiles) {
+      register(p.email, p.displayName);
+    }
+  }
+
+  for (const m of fallbackMembers) {
+    if (m.active) {
+      register(m.email, m.displayName, m.role);
+    }
+  }
+
+  const list = Array.from(byEmail.values()).sort((a, b) =>
+    a.shortName.localeCompare(b.shortName, 'vi')
+  );
+  if (list.length > 0) {
+    appCache.set('staff:short_options', list, 60_000);
+  }
+  return list;
 }
 
 export async function updateMyProfileDetails(
@@ -1472,6 +1542,82 @@ export async function deletePoliciesBatch(
   }
   appCache.invalidatePrefix('policies:');
   return {};
+}
+
+export interface WarehouseUpdateEntry {
+  id: string;
+  source: 'catalog' | 'policy';
+  codeOrSystem: string;
+  title: string;
+  detail: string;
+  updatedBy: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  isNew: boolean;
+}
+
+export async function fetchRecentWarehouseUpdates(
+  client: SupabaseClient,
+  limitPerTable = 15
+): Promise<WarehouseUpdateEntry[]> {
+  recordClientDbOp(2);
+  const [catRes, polRes] = await Promise.all([
+    client
+      .from('product_catalog')
+      .select('id,product_code,name,unit,price,supplier_name,updated_by,created_at,updated_at')
+      .order('updated_at', { ascending: false })
+      .limit(limitPerTable),
+    client
+      .from('supplier_policies')
+      .select('id,category,supplier_name,supplier_system_name,product_name,return_policy,updated_by,created_at,updated_at')
+      .order('updated_at', { ascending: false })
+      .limit(limitPerTable),
+  ]);
+
+  const entries: WarehouseUpdateEntry[] = [];
+  const checkIsNew = (createdAt: unknown, updatedAt: unknown): boolean => {
+    const c = createdAt ? new Date(String(createdAt)).getTime() : 0;
+    const u = updatedAt ? new Date(String(updatedAt)).getTime() : 0;
+    if (!c || !u) return true;
+    return Math.abs(u - c) <= 5000;
+  };
+
+  for (const r of (catRes.data || []) as Record<string, unknown>[]) {
+    const price = Number(r.price || 0);
+    entries.push({
+      id: `cat_${String(r.id)}`,
+      source: 'catalog',
+      codeOrSystem: String(r.product_code || ''),
+      title: String(r.name || ''),
+      detail: `${r.unit ? `ĐVT: ${String(r.unit)} · ` : ''}Giá: ${price.toLocaleString('vi-VN')}đ${r.supplier_name ? ` · ${String(r.supplier_name)}` : ''}`,
+      updatedBy: String(r.updated_by || ''),
+      createdAt: r.created_at ? String(r.created_at) : null,
+      updatedAt: r.updated_at ? String(r.updated_at) : null,
+      isNew: checkIsNew(r.created_at, r.updated_at),
+    });
+  }
+
+  for (const r of (polRes.data || []) as Record<string, unknown>[]) {
+    entries.push({
+      id: `pol_${String(r.id)}`,
+      source: 'policy',
+      codeOrSystem: String(r.supplier_system_name || ''),
+      title: String(r.product_name || r.supplier_name || 'Chính sách đổi trả'),
+      detail: `${r.category ? `[${String(r.category)}] ` : ''}${String(r.return_policy || 'Chưa ghi quy định')}`,
+      updatedBy: String(r.updated_by || ''),
+      createdAt: r.created_at ? String(r.created_at) : null,
+      updatedAt: r.updated_at ? String(r.updated_at) : null,
+      isNew: checkIsNew(r.created_at, r.updated_at),
+    });
+  }
+
+  return entries
+    .sort((a, b) => {
+      const ta = new Date(a.updatedAt || a.createdAt || 0).getTime();
+      const tb = new Date(b.updatedAt || b.createdAt || 0).getTime();
+      return tb - ta;
+    })
+    .slice(0, 25);
 }
 
 // ============================================================================

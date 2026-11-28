@@ -76,6 +76,7 @@ import {
   ROLE_LABELS,
   SUPER_ADMIN_EMAIL,
   emailToKey,
+  filterLogsLast60Days,
   normalizeEmail,
   normalizeRole,
   resolveModuleAccessFlags,
@@ -1180,7 +1181,7 @@ function MainApp() {
         setAuthorizedMembers(res.members);
       }
       if (permissions.activityView) {
-        setActivityLogs(res.logs);
+        setActivityLogs(filterLogsLast60Days(res.logs));
       }
       if (res.schemaWarning && !schemaWarningShownRef.current) {
         schemaWarningShownRef.current = true;
@@ -1331,7 +1332,7 @@ function MainApp() {
         if (cancelled || !permissions.activityView) return;
         setActivityLogs((prev) => {
           if (prev.some((l) => l.id === row.id)) return prev;
-          return [row, ...prev].slice(0, 250);
+          return filterLogsLast60Days([row, ...prev]).slice(0, 250);
         });
       },
 
@@ -1727,7 +1728,9 @@ function MainApp() {
       });
       if (inserted && permissions.activityView) {
         setActivityLogs((prev) =>
-          prev.some((l) => l.id === inserted.id) ? prev : [inserted, ...prev]
+          prev.some((l) => l.id === inserted.id)
+            ? prev
+            : filterLogsLast60Days([inserted, ...prev])
         );
       }
     },
@@ -3195,6 +3198,7 @@ function MainApp() {
               <ExpiryControlTab
                 client={activeSupabaseClient}
                 user={currentUser}
+                authorizedMembers={authorizedMembers}
                 canDelete={
                   permissions.role === 'store_manager' ||
                   permissions.role === 'supervisor'
@@ -3212,6 +3216,7 @@ function MainApp() {
               <GoodsReturnTab
                 client={activeSupabaseClient}
                 user={currentUser}
+                authorizedMembers={authorizedMembers}
                 canDelete={
                   permissions.role === 'store_manager' ||
                   permissions.role === 'supervisor'
@@ -3229,6 +3234,7 @@ function MainApp() {
               <PromotionsTab
                 client={activeSupabaseClient}
                 user={currentUser}
+                authorizedMembers={authorizedMembers}
                 canEdit={permissions.role !== 'staff'}
                 canDelete={
                   permissions.role === 'store_manager' ||

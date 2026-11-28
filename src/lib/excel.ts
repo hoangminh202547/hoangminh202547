@@ -1,5 +1,6 @@
 import { readSheet } from 'read-excel-file/browser';
 import writeXlsxFile, { type Row } from 'write-excel-file/browser';
+import { extractNoticeMonthsFromPolicy } from './permissions';
 import type {
   AttendanceNoteEntry,
   AttendanceRecord,
@@ -298,8 +299,8 @@ export async function exportSchedulesToExcel(
 // Attendance Excel Export
 // ============================================================================
 const ATTENDANCE_STATUS_VI: Record<AttendanceRecord['status'], string> = {
-  checked_in: 'Đang trong ca',
-  checked_out: 'Đã kết ca',
+  checked_in: 'Đã xác nhận ca',
+  checked_out: 'Đã xác nhận ca',
   early_leave: 'Về sớm',
   overtime: 'Tăng ca',
   clear_time: 'Clear giờ',
@@ -321,8 +322,8 @@ export async function exportAttendanceToExcel(records: AttendanceRecord[]): Prom
     { value: 'Email', ...HEADER_STYLE },
     { value: 'Ca làm', ...HEADER_STYLE },
     { value: 'Loại', ...HEADER_STYLE },
-    { value: 'Giờ vào (Thực tế)', ...HEADER_STYLE },
-    { value: 'Giờ ra', ...HEADER_STYLE },
+    { value: 'Thời gian xác nhận ca', ...HEADER_STYLE },
+    { value: 'Giờ điều chỉnh / ra', ...HEADER_STYLE },
     { value: 'Trạng thái', ...HEADER_STYLE },
     { value: 'Lịch sử ghi chú', ...HEADER_STYLE },
   ];
@@ -475,7 +476,6 @@ export async function downloadPolicyTemplate(): Promise<string> {
     { value: 'Tên NCC HT', ...HEADER_STYLE },
     { value: 'Tên hàng hóa', ...HEADER_STYLE },
     { value: 'Đổi trả SP', ...HEADER_STYLE },
-    { value: 'Báo trước (tháng)', ...HEADER_STYLE },
   ];
   const sample: Row = [
     { type: Number, value: 1 },
@@ -484,11 +484,10 @@ export async function downloadPolicyTemplate(): Promise<string> {
     { type: String, value: 'NCC_DUOC_A' },
     { type: String, value: 'Tất cả' },
     { type: String, value: 'Đổi trả trước HSD 3 tháng' },
-    { type: Number, value: 3 },
   ];
   const fileName = 'Mau_ChinhSachDoiTraNCC.xlsx';
   await writeXlsxFile(
-    [{ sheet: 'Chính sách NCC', data: [header, sample], columns: [{ width: 6 }, { width: 16 }, { width: 24 }, { width: 20 }, { width: 24 }, { width: 28 }, { width: 16 }] }],
+    [{ sheet: 'Chính sách NCC', data: [header, sample], columns: [{ width: 6 }, { width: 16 }, { width: 24 }, { width: 20 }, { width: 24 }, { width: 32 }] }],
     { fontFamily: 'Roboto', fontSize: 11 }
   ).toFile(fileName);
   return fileName;
@@ -502,7 +501,6 @@ export async function exportPoliciesToExcel(items: SupplierPolicyItem[]): Promis
     { value: 'Tên NCC HT', ...HEADER_STYLE },
     { value: 'Tên hàng hóa', ...HEADER_STYLE },
     { value: 'Đổi trả SP', ...HEADER_STYLE },
-    { value: 'Báo trước (tháng)', ...HEADER_STYLE },
   ];
   const rows: Row[] = items.map((item, idx) => [
     { type: Number, value: idx + 1 },
@@ -511,11 +509,10 @@ export async function exportPoliciesToExcel(items: SupplierPolicyItem[]): Promis
     { type: String, value: item.supplierSystemName },
     { type: String, value: item.productName },
     { type: String, value: item.returnPolicy },
-    { type: Number, value: item.warnMonthsBefore },
   ]);
   const fileName = `ChinhSachDoiTraNCC_${new Date().toISOString().slice(0, 10)}.xlsx`;
   await writeXlsxFile(
-    [{ sheet: 'Chính sách NCC', data: [header, ...rows], columns: Array(7).fill({ width: 20 }) }],
+    [{ sheet: 'Chính sách NCC', data: [header, ...rows], columns: Array(6).fill({ width: 22 }) }],
     { fontFamily: 'Roboto', fontSize: 11 }
   ).toFile(fileName);
   return fileName;
@@ -570,25 +567,46 @@ export async function exportExpiryToExcel(items: ExpiryTrackingItem[]): Promise<
     { value: 'Ngày sản xuất', ...HEADER_STYLE },
     { value: 'Hạn sử dụng', ...HEADER_STYLE },
     { value: 'Đổi trả SP', ...HEADER_STYLE },
-    { value: 'Ghi chú & cảnh báo', ...HEADER_STYLE },
+    { value: 'Cảnh báo đổi trả NCC', ...HEADER_STYLE },
+    { value: 'Ghi chú', ...HEADER_STYLE },
     { value: 'PT', ...HEADER_STYLE },
   ];
-  const rows: Row[] = items.map((item, idx) => [
-    { type: Number, value: idx + 1 },
-    { type: String, value: item.supplierSystemName },
-    { type: String, value: item.productCode },
-    { type: String, value: item.barcode },
-    { type: String, value: item.productName },
-    { type: String, value: item.unit },
-    { type: String, value: item.mfgDate },
-    { type: String, value: item.expDate },
-    { type: String, value: item.returnPolicy },
-    { type: String, value: item.note },
-    { type: String, value: item.ptCode },
-  ]);
+  const todayMs = new Date().setHours(0, 0, 0, 0);
+  const rows: Row[] = items.map((item, idx) => {
+    const months = extractNoticeMonthsFromPolicy(item.returnPolicy, item.warnMonthsBefore);
+    let noticeStatus = '—';
+    if (item.expDate && months > 0) {
+      const expMs = new Date(`${item.expDate}T00:00:00`).getTime();
+      if (Number.isFinite(expMs)) {
+        const deadlineMs = expMs - months * 30 * 86_400_000;
+        const daysToNotify = Math.ceil((deadlineMs - todayMs) / 86_400_000);
+        const deadlineStr = new Intl.DateTimeFormat('vi-VN').format(new Date(deadlineMs));
+        noticeStatus =
+          daysToNotify < 0
+            ? `Quá hạn báo NCC ${Math.abs(daysToNotify)} ngày (Hạn ${deadlineStr})`
+            : daysToNotify === 0
+              ? `Hôm nay là hạn báo NCC (${deadlineStr})`
+              : `Còn ${daysToNotify} ngày báo NCC (Hạn ${deadlineStr})`;
+      }
+    }
+    return [
+      { type: Number, value: idx + 1 },
+      { type: String, value: item.supplierSystemName },
+      { type: String, value: item.productCode },
+      { type: String, value: item.barcode },
+      { type: String, value: item.productName },
+      { type: String, value: item.unit },
+      { type: String, value: item.mfgDate },
+      { type: String, value: item.expDate },
+      { type: String, value: item.returnPolicy },
+      { type: String, value: noticeStatus },
+      { type: String, value: item.note },
+      { type: String, value: item.ptCode },
+    ];
+  });
   const fileName = `KiemSoatHSD_${new Date().toISOString().slice(0, 10)}.xlsx`;
   await writeXlsxFile(
-    [{ sheet: 'Kiểm soát HSD', data: [header, ...rows], columns: Array(11).fill({ width: 18 }) }],
+    [{ sheet: 'Kiểm soát HSD', data: [header, ...rows], columns: Array(12).fill({ width: 20 }) }],
     { fontFamily: 'Roboto', fontSize: 11 }
   ).toFile(fileName);
   return fileName;

@@ -121,18 +121,53 @@ function drawRoundedRect(
   ctx.closePath();
 }
 
-function truncateText(
+function wrapCanvasText(
   ctx: CanvasRenderingContext2D,
   text: string,
   maxWidth: number
-): string {
-  const raw = String(text ?? '');
-  if (ctx.measureText(raw).width <= maxWidth) return raw;
-  let clipped = raw;
-  while (clipped.length > 0 && ctx.measureText(`${clipped}…`).width > maxWidth) {
-    clipped = clipped.slice(0, -1);
+): string[] {
+  const raw = String(text ?? '').trim();
+  if (!raw) return ['—'];
+  const effectiveMax = Math.max(24, maxWidth);
+  const paragraphs = raw.split(/\r?\n/);
+  const lines: string[] = [];
+
+  for (const para of paragraphs) {
+    const words = para.split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      lines.push('');
+      continue;
+    }
+    let currentLine = '';
+    for (const word of words) {
+      const candidate = currentLine ? `${currentLine} ${word}` : word;
+      if (ctx.measureText(candidate).width <= effectiveMax) {
+        currentLine = candidate;
+      } else {
+        if (currentLine) {
+          lines.push(currentLine);
+          currentLine = '';
+        }
+        if (ctx.measureText(word).width <= effectiveMax) {
+          currentLine = word;
+        } else {
+          // Break very long continuous token (e.g. long barcode/product code)
+          let chunk = '';
+          for (const ch of word) {
+            if (ctx.measureText(chunk + ch).width > effectiveMax && chunk) {
+              lines.push(chunk);
+              chunk = ch;
+            } else {
+              chunk += ch;
+            }
+          }
+          currentLine = chunk;
+        }
+      }
+    }
+    if (currentLine) lines.push(currentLine);
   }
-  return clipped ? `${clipped}…` : '';
+  return lines.length > 0 ? lines : ['—'];
 }
 
 function buildTablePageCanvases(
@@ -142,15 +177,37 @@ function buildTablePageCanvases(
   rows: Array<Array<string | number>>,
   rowsPerPage = 24
 ): HTMLCanvasElement[] {
-  const paddingX = 32;
-  const paddingTop = 28;
-  const paddingBottom = 24;
-  const headerBlockH = 68;
-  const tableHeaderH = 38;
-  const rowH = 34;
+  const paddingX = 28;
+  const paddingTop = 26;
+  const paddingBottom = 26;
+  const lineH = 17;
+  const cellPadX = 10;
+  const cellPadY = 9;
   const totalTableW = columns.reduce((acc, c) => acc + c.width, 0);
-  const canvasW = Math.max(960, totalTableW + paddingX * 2);
+  const canvasW = Math.max(1040, totalTableW + paddingX * 2);
+  const tableW = canvasW - paddingX * 2;
+  const scaleX = tableW / totalTableW;
   const scale = 2;
+
+  const measureCanvas = document.createElement('canvas');
+  const mCtx = measureCanvas.getContext('2d');
+  if (!mCtx) throw new Error('Không thể khởi tạo canvas xuất tệp.');
+
+  // Wrap title & subtitle cleanly
+  mCtx.font = 'bold 20px Roboto, Arial, sans-serif';
+  const titleLines = wrapCanvasText(mCtx, title, tableW - 8);
+  mCtx.font = '13px Roboto, Arial, sans-serif';
+  const subtitleLines = wrapCanvasText(mCtx, subtitle, tableW - 8);
+  const headerBlockH =
+    titleLines.length * 25 + subtitleLines.length * 18 + 18;
+
+  // Wrap table header labels
+  mCtx.font = 'bold 12px Roboto, Arial, sans-serif';
+  const wrappedHeaders = columns.map((col) =>
+    wrapCanvasText(mCtx, col.header, col.width * scaleX - cellPadX * 2)
+  );
+  const maxHeaderLines = Math.max(1, ...wrappedHeaders.map((l) => l.length));
+  const tableHeaderH = Math.max(40, maxHeaderLines * lineH + cellPadY * 2);
 
   const chunks: Array<Array<Array<string | number>>> = [];
   for (let i = 0; i < Math.max(1, rows.length); i += rowsPerPage) {
@@ -158,9 +215,29 @@ function buildTablePageCanvases(
   }
 
   return chunks.map((chunk, pageIdx) => {
-    const contentRows = Math.max(1, chunk.length);
+    mCtx.font = '12.5px Roboto, Arial, sans-serif';
+    const rowLayouts = chunk.map((row) => {
+      const cells = columns.map((col, cIdx) => {
+        const colW = col.width * scaleX;
+        const lines = wrapCanvasText(
+          mCtx,
+          String(row[cIdx] ?? ''),
+          colW - cellPadX * 2
+        );
+        return lines;
+      });
+      const maxLines = Math.max(1, ...cells.map((l) => l.length));
+      const height = Math.max(38, maxLines * lineH + cellPadY * 2);
+      return { cells, height };
+    });
+
+    const totalBodyH =
+      chunk.length === 0
+        ? 48
+        : rowLayouts.reduce((sum, r) => sum + r.height, 0);
+
     const canvasH =
-      paddingTop + headerBlockH + tableHeaderH + contentRows * rowH + paddingBottom + 28;
+      paddingTop + headerBlockH + tableHeaderH + totalBodyH + paddingBottom + 28;
     const canvas = document.createElement('canvas');
     canvas.width = canvasW * scale;
     canvas.height = canvasH * scale;
@@ -172,95 +249,136 @@ function buildTablePageCanvases(
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, canvasW, canvasH);
 
-    // Header
+    // Title & Subtitle
+    let curHeaderY = paddingTop + 18;
     ctx.fillStyle = '#0F172A';
     ctx.font = 'bold 20px Roboto, Arial, sans-serif';
-    ctx.fillText(title, paddingX, paddingTop + 20);
+    ctx.textAlign = 'left';
+    for (const line of titleLines) {
+      ctx.fillText(line, paddingX, curHeaderY);
+      curHeaderY += 25;
+    }
 
     ctx.fillStyle = '#475569';
     ctx.font = '13px Roboto, Arial, sans-serif';
-    const pageSuffix = chunks.length > 1 ? ` · Trang ${pageIdx + 1}/${chunks.length}` : '';
-    ctx.fillText(`${subtitle}${pageSuffix}`, paddingX, paddingTop + 44);
+    const pageSuffix =
+      chunks.length > 1 ? ` · Trang ${pageIdx + 1}/${chunks.length}` : '';
+    const subWithPage =
+      pageSuffix && subtitleLines.length > 0
+        ? [
+            ...subtitleLines.slice(0, -1),
+            `${subtitleLines[subtitleLines.length - 1]}${pageSuffix}`,
+          ]
+        : subtitleLines;
+    for (const line of subWithPage) {
+      ctx.fillText(line, paddingX, curHeaderY);
+      curHeaderY += 18;
+    }
 
     const tableY = paddingTop + headerBlockH;
-    const tableW = canvasW - paddingX * 2;
-    const scaleX = tableW / totalTableW;
 
-    // Table header
+    // Table header background
     drawRoundedRect(ctx, paddingX, tableY, tableW, tableHeaderH, 6);
-    ctx.fillStyle = '#F1F5F9';
+    ctx.fillStyle = '#EFF6FF';
     ctx.fill();
     ctx.strokeStyle = '#CBD5E1';
     ctx.lineWidth = 1;
     ctx.stroke();
 
+    // Header cells + vertical dividers
     ctx.fillStyle = '#0F172A';
     ctx.font = 'bold 12px Roboto, Arial, sans-serif';
     let curX = paddingX;
-    for (const col of columns) {
+    columns.forEach((col, colIdx) => {
       const colW = col.width * scaleX;
-      const label = truncateText(ctx, col.header, colW - 14);
-      if (col.align === 'right') {
-        ctx.textAlign = 'right';
-        ctx.fillText(label, curX + colW - 8, tableY + 23);
-      } else if (col.align === 'center') {
-        ctx.textAlign = 'center';
-        ctx.fillText(label, curX + colW / 2, tableY + 23);
-      } else {
-        ctx.textAlign = 'left';
-        ctx.fillText(label, curX + 8, tableY + 23);
+      if (colIdx > 0) {
+        ctx.beginPath();
+        ctx.moveTo(curX, tableY);
+        ctx.lineTo(curX, tableY + tableHeaderH);
+        ctx.strokeStyle = '#CBD5E1';
+        ctx.stroke();
       }
+      const lines = wrappedHeaders[colIdx];
+      const blockH = lines.length * lineH;
+      const startY = tableY + (tableHeaderH - blockH) / 2 + 13;
+      lines.forEach((line, lIdx) => {
+        if (col.align === 'right') {
+          ctx.textAlign = 'right';
+          ctx.fillText(line, curX + colW - cellPadX, startY + lIdx * lineH);
+        } else if (col.align === 'center') {
+          ctx.textAlign = 'center';
+          ctx.fillText(line, curX + colW / 2, startY + lIdx * lineH);
+        } else {
+          ctx.textAlign = 'left';
+          ctx.fillText(line, curX + cellPadX, startY + lIdx * lineH);
+        }
+      });
       curX += colW;
-    }
+    });
 
-    // Rows
-    ctx.font = '12px Roboto, Arial, sans-serif';
+    // Body rows
+    let curRowY = tableY + tableHeaderH;
     if (chunk.length === 0) {
+      ctx.strokeStyle = '#E2E8F0';
+      ctx.strokeRect(paddingX, curRowY, tableW, 48);
       ctx.textAlign = 'center';
       ctx.fillStyle = '#64748B';
-      ctx.fillText('Không có dữ liệu', paddingX + tableW / 2, tableY + tableHeaderH + 22);
+      ctx.font = '13px Roboto, Arial, sans-serif';
+      ctx.fillText('Không có dữ liệu', paddingX + tableW / 2, curRowY + 29);
     } else {
-      chunk.forEach((row, rIdx) => {
-        const ry = tableY + tableHeaderH + rIdx * rowH;
+      rowLayouts.forEach((layout, rIdx) => {
+        const ry = curRowY;
+        const rh = layout.height;
         if (rIdx % 2 === 1) {
           ctx.fillStyle = '#F8FAFC';
-          ctx.fillRect(paddingX, ry, tableW, rowH);
+          ctx.fillRect(paddingX, ry, tableW, rh);
         }
         ctx.strokeStyle = '#E2E8F0';
-        ctx.beginPath();
-        ctx.moveTo(paddingX, ry + rowH);
-        ctx.lineTo(paddingX + tableW, ry + rowH);
-        ctx.stroke();
+        ctx.lineWidth = 1;
+        ctx.strokeRect(paddingX, ry, tableW, rh);
 
         let cellX = paddingX;
+        ctx.font = '12.5px Roboto, Arial, sans-serif';
         columns.forEach((col, cIdx) => {
           const colW = col.width * scaleX;
-          const cellStr = truncateText(ctx, String(row[cIdx] ?? ''), colW - 14);
-          ctx.fillStyle = '#0F172A';
-          if (col.align === 'right') {
-            ctx.textAlign = 'right';
-            ctx.fillText(cellStr, cellX + colW - 8, ry + 21);
-          } else if (col.align === 'center') {
-            ctx.textAlign = 'center';
-            ctx.fillText(cellStr, cellX + colW / 2, ry + 21);
-          } else {
-            ctx.textAlign = 'left';
-            ctx.fillText(cellStr, cellX + 8, ry + 21);
+          if (cIdx > 0) {
+            ctx.beginPath();
+            ctx.moveTo(cellX, ry);
+            ctx.lineTo(cellX, ry + rh);
+            ctx.strokeStyle = '#E2E8F0';
+            ctx.stroke();
           }
+          const lines = layout.cells[cIdx];
+          const textStartY = ry + cellPadY + 13;
+          ctx.fillStyle = '#0F172A';
+          lines.forEach((line, lIdx) => {
+            if (col.align === 'right') {
+              ctx.textAlign = 'right';
+              ctx.fillText(line, cellX + colW - cellPadX, textStartY + lIdx * lineH);
+            } else if (col.align === 'center') {
+              ctx.textAlign = 'center';
+              ctx.fillText(line, cellX + colW / 2, textStartY + lIdx * lineH);
+            } else {
+              ctx.textAlign = 'left';
+              ctx.fillText(line, cellX + cellPadX, textStartY + lIdx * lineH);
+            }
+          });
           cellX += colW;
         });
+
+        curRowY += rh;
       });
     }
 
     // Footer timestamp
     ctx.textAlign = 'left';
-    ctx.fillStyle = '#94A3B8';
-    ctx.font = '11px Roboto, Arial, sans-serif';
+    ctx.fillStyle = '#64748B';
+    ctx.font = '11.5px Roboto, Arial, sans-serif';
     ctx.fillText(
       `Xuất lúc ${new Intl.DateTimeFormat('vi-VN', {
         dateStyle: 'short',
         timeStyle: 'short',
-      }).format(new Date())}`,
+      }).format(new Date())} · Tổng hiển thị: ${rows.length} dòng`,
       paddingX,
       canvasH - 12
     );
@@ -287,15 +405,31 @@ export async function exportTableToPng(
   rows: Array<Array<string | number>>,
   filename: string
 ): Promise<string> {
-  const canvases = buildTablePageCanvases(title, subtitle, columns, rows, 80);
-  const canvas = canvases[0];
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error('Không thể tạo ảnh PNG.'))),
-      'image/png'
-    );
-  });
-  triggerDownloadBlob(blob, filename);
+  if (typeof document !== 'undefined' && 'fonts' in document) {
+    await document.fonts.ready;
+  }
+  const perImageLimit = 220;
+  const canvases = buildTablePageCanvases(
+    title,
+    subtitle,
+    columns,
+    rows,
+    perImageLimit
+  );
+  for (let idx = 0; idx < canvases.length; idx += 1) {
+    const canvas = canvases[idx];
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error('Không thể tạo ảnh PNG.'))),
+        'image/png'
+      );
+    });
+    const outName =
+      canvases.length === 1
+        ? filename
+        : filename.replace(/\.png$/i, `_P${idx + 1}.png`);
+    triggerDownloadBlob(blob, outName);
+  }
   return filename;
 }
 
@@ -306,7 +440,10 @@ export async function exportTableToPdf(
   rows: Array<Array<string | number>>,
   filename: string
 ): Promise<string> {
-  const canvases = buildTablePageCanvases(title, subtitle, columns, rows, 22);
+  if (typeof document !== 'undefined' && 'fonts' in document) {
+    await document.fonts.ready;
+  }
+  const canvases = buildTablePageCanvases(title, subtitle, columns, rows, 20);
   const doc = new jsPDF({
     orientation: 'landscape',
     unit: 'pt',

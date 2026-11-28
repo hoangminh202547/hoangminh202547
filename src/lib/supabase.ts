@@ -10,6 +10,7 @@ import migration003Sql from '../../supabase/migrations/003_fix_rls_policies.sql?
 import migration004Sql from '../../supabase/migrations/004_sync_and_schema_hardening.sql?raw';
 import migration005Sql from '../../supabase/migrations/005_attendance_and_updates.sql?raw';
 import migration006Sql from '../../supabase/migrations/006_query_optimization_and_timeout_fix.sql?raw';
+import migration007Sql from '../../supabase/migrations/007_ops_enhancements_and_log_retention.sql?raw';
 import type {
   ActivityAction,
   ActivityLog,
@@ -27,7 +28,13 @@ import type {
   UserRole,
   WorkSchedule,
 } from '../types';
-import { emailToKey, normalizeEmail, normalizeRole } from './permissions';
+import {
+  emailToKey,
+  filterLogsLast60Days,
+  getActivityLogCutoffIso,
+  normalizeEmail,
+  normalizeRole,
+} from './permissions';
 
 export const SUPABASE_SCHEMA_SQL = schemaSql;
 export const SUPABASE_MIGRATION_002_SQL = migration002Sql;
@@ -35,6 +42,7 @@ export const SUPABASE_MIGRATION_003_SQL = migration003Sql;
 export const SUPABASE_MIGRATION_004_SQL = migration004Sql;
 export const SUPABASE_MIGRATION_005_SQL = migration005Sql;
 export const SUPABASE_MIGRATION_006_SQL = migration006Sql;
+export const SUPABASE_MIGRATION_007_SQL = migration007Sql;
 
 export const BARCODE_SCAN_COLUMNS =
   'id,owner_id,owner_email,code,format,session_name,quantity,note,version,updated_by,scanned_at,updated_at';
@@ -1617,8 +1625,9 @@ export async function fetchAllSyncedData(
       ? client
           .from('activity_logs')
           .select(ACTIVITY_LOG_COLUMNS)
+          .gte('created_at', getActivityLogCutoffIso())
           .order('created_at', { ascending: false })
-          .limit(100)
+          .limit(500)
       : Promise.resolve({ data: [], error: null }),
   ]);
 
@@ -1747,8 +1756,9 @@ export async function fetchAllSyncedData(
     const starLogs = await client
       .from('activity_logs')
       .select('*')
+      .gte('created_at', getActivityLogCutoffIso())
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(500);
     if (!starLogs.error) {
       logData = (starLogs.data || []) as Record<string, unknown>[];
       logError = null;
@@ -1772,7 +1782,7 @@ export async function fetchAllSyncedData(
     scans: scanData.map((r) => mapBarcodeRow(r)),
     schedules: schedData.map((r) => mapScheduleRow(r)),
     members: accessData.map((r) => mapAccessRow(r)),
-    logs: logData.map((r) => mapActivityRow(r)),
+    logs: filterLogsLast60Days(logData.map((r) => mapActivityRow(r))),
     schemaWarning,
   };
 }
