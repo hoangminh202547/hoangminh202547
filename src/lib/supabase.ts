@@ -9,6 +9,7 @@ import migration002Sql from '../../supabase/migrations/002_full_erp.sql?raw';
 import migration003Sql from '../../supabase/migrations/003_fix_rls_policies.sql?raw';
 import migration004Sql from '../../supabase/migrations/004_sync_and_schema_hardening.sql?raw';
 import migration005Sql from '../../supabase/migrations/005_attendance_and_updates.sql?raw';
+import migration006Sql from '../../supabase/migrations/006_query_optimization_and_timeout_fix.sql?raw';
 import type {
   ActivityAction,
   ActivityLog,
@@ -33,6 +34,7 @@ export const SUPABASE_MIGRATION_002_SQL = migration002Sql;
 export const SUPABASE_MIGRATION_003_SQL = migration003Sql;
 export const SUPABASE_MIGRATION_004_SQL = migration004Sql;
 export const SUPABASE_MIGRATION_005_SQL = migration005Sql;
+export const SUPABASE_MIGRATION_006_SQL = migration006Sql;
 
 export const BARCODE_SCAN_COLUMNS =
   'id,owner_id,owner_email,code,format,session_name,quantity,note,version,updated_by,scanned_at,updated_at';
@@ -57,6 +59,28 @@ export function isMissingColumnError(rawMessage: string | undefined): boolean {
     /column .* does not exist/i.test(msg) ||
     /\b42703\b/.test(msg)
   );
+}
+
+export function isStatementTimeoutError(rawMessage: string | undefined): boolean {
+  const msg = (rawMessage || '').trim();
+  if (!msg) return false;
+  return (
+    /canceling statement due to statement timeout/i.test(msg) ||
+    /statement timeout/i.test(msg) ||
+    /\b57014\b/.test(msg)
+  );
+}
+
+export function formatSupabaseReadError(
+  rawMessage: string | undefined,
+  contextLabel?: string
+): string {
+  const msg = (rawMessage || '').trim();
+  if (!msg) return 'Không thể tải dữ liệu từ Supabase.';
+  if (isStatementTimeoutError(msg)) {
+    return `Truy vấn Supabase bị quá thời gian xử lý${contextLabel ? ` (${contextLabel})` : ''}. Hãy thu gọn bộ lọc/từ khóa tìm kiếm hoặc chạy script SQL 006_query_optimization_and_timeout_fix.sql trong Quản lý Supabase để tối ưu chỉ mục & RLS.`;
+  }
+  return msg;
 }
 
 /**
@@ -1095,7 +1119,7 @@ export async function testSupabaseConnection(
         Promise.all(
           coreTables.map(async (t) => ({
             table: t,
-            res: await client.from(t).select('id', { count: 'exact', head: true }),
+            res: await client.from(t).select('id', { count: 'estimated', head: true }),
           }))
         ),
         Promise.all(
@@ -1104,7 +1128,7 @@ export async function testSupabaseConnection(
             res: await client
               .from(t)
               .select(t === 'system_settings' ? 'key' : 'id', {
-                count: 'exact',
+                count: 'estimated',
                 head: true,
               }),
           }))
@@ -1408,6 +1432,9 @@ export function formatSupabaseWriteError(
 ): string {
   const msg = (rawMessage || '').trim();
   if (!msg) return fallbackMessage;
+  if (isStatementTimeoutError(msg)) {
+    return `Thao tác trên bảng "${tableName}" bị quá thời gian xử lý (statement timeout). Hãy chia nhỏ dữ liệu hoặc chạy script SQL 006_query_optimization_and_timeout_fix.sql trong Quản lý Supabase để tối ưu chỉ mục & RLS.`;
+  }
   if (/could not find the ['"]?([a-z0-9_]+)['"]? column/i.test(msg)) {
     return `Bảng "${tableName}" trên Supabase đang thiếu cột (${msg}). Hãy chạy script SQL 004_sync_and_schema_hardening.sql trong Supabase SQL Editor để bổ sung cột an toàn (không mất dữ liệu cũ).`;
   }
@@ -1509,6 +1536,42 @@ export async function fetchMyAccessFromSupabase(
   return { access: mapAccessRow(data as Record<string, unknown>) };
 }
 
+async function fetchPagedSyncRows(
+  client: SupabaseClient,
+  table: string,
+  columns: string,
+  orderClauses: Array<{ column: string; ascending: boolean }>,
+  maxRows: number,
+  initialPageSize = 750
+): Promise<{ data: Record<string, unknown>[]; error: { message?: string } | null }> {
+  const runPaged = async (pageSize: number) => {
+    const collected: Record<string, unknown>[] = [];
+    for (let offset = 0; offset < maxRows; offset += pageSize) {
+      const end = Math.min(maxRows - 1, offset + pageSize - 1);
+      let q = client.from(table).select(columns);
+      for (const ord of orderClauses) {
+        q = q.order(ord.column, { ascending: ord.ascending });
+      }
+      const { data, error } = await q.range(offset, end);
+      if (error) {
+        return { data: collected, error };
+      }
+      const rows = (data || []) as unknown as Record<string, unknown>[];
+      collected.push(...rows);
+      if (rows.length < end - offset + 1) {
+        break;
+      }
+    }
+    return { data: collected, error: null };
+  };
+
+  const firstAttempt = await runPaged(initialPageSize);
+  if (firstAttempt.error && isStatementTimeoutError(firstAttempt.error.message)) {
+    return runPaged(200);
+  }
+  return firstAttempt;
+}
+
 export async function fetchAllSyncedData(
   client: SupabaseClient,
   options: { isStoreManager: boolean; allowActivity: boolean }
@@ -1521,24 +1584,35 @@ export async function fetchAllSyncedData(
   schemaWarning?: string;
 }> {
   const [scanRes, schedInitial, accessInitial, logRes] = await Promise.all([
-    client
-      .from('barcode_scans')
-      .select(BARCODE_SCAN_COLUMNS)
-      .order('updated_at', { ascending: false })
-      .limit(1500),
-    client
-      .from('work_schedules')
-      .select(WORK_SCHEDULE_COLUMNS)
-      .order('work_date', { ascending: true })
-      .order('start_time', { ascending: true })
-      .limit(1500),
+    fetchPagedSyncRows(
+      client,
+      'barcode_scans',
+      BARCODE_SCAN_COLUMNS,
+      [{ column: 'updated_at', ascending: false }],
+      1500,
+      750
+    ),
+    fetchPagedSyncRows(
+      client,
+      'work_schedules',
+      WORK_SCHEDULE_COLUMNS,
+      [
+        { column: 'work_date', ascending: true },
+        { column: 'start_time', ascending: true },
+      ],
+      1500,
+      750
+    ),
     options.isStoreManager
-      ? client
-          .from('user_access')
-          .select(USER_ACCESS_COLUMNS)
-          .order('email', { ascending: true })
-          .limit(500)
-      : Promise.resolve({ data: [], error: null }),
+      ? fetchPagedSyncRows(
+          client,
+          'user_access',
+          USER_ACCESS_COLUMNS,
+          [{ column: 'email', ascending: true }],
+          500,
+          500
+        )
+      : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
     options.allowActivity
       ? client
           .from('activity_logs')
@@ -1548,20 +1622,11 @@ export async function fetchAllSyncedData(
       : Promise.resolve({ data: [], error: null }),
   ]);
 
-  let scanData: Record<string, unknown>[] = (scanRes.data || []) as Record<
-    string,
-    unknown
-  >[];
+  let scanData: Record<string, unknown>[] = scanRes.data || [];
   let scanError = scanRes.error;
-  let schedData: Record<string, unknown>[] = (schedInitial.data || []) as Record<
-    string,
-    unknown
-  >[];
+  let schedData: Record<string, unknown>[] = schedInitial.data || [];
   let schedError = schedInitial.error;
-  let accessData: Record<string, unknown>[] = (accessInitial.data || []) as Record<
-    string,
-    unknown
-  >[];
+  let accessData: Record<string, unknown>[] = accessInitial.data || [];
   let accessError = accessInitial.error;
   let logData: Record<string, unknown>[] = (logRes.data || []) as Record<
     string,
@@ -1571,23 +1636,30 @@ export async function fetchAllSyncedData(
   let schemaWarning: string | undefined;
 
   if (scanError && isMissingColumnError(scanError.message)) {
-    const retryScans = await client
-      .from('barcode_scans')
-      .select(BARCODE_SCAN_CORE_COLUMNS)
-      .order('updated_at', { ascending: false })
-      .limit(1500);
+    const retryScans = await fetchPagedSyncRows(
+      client,
+      'barcode_scans',
+      BARCODE_SCAN_CORE_COLUMNS,
+      [{ column: 'updated_at', ascending: false }],
+      1500,
+      500
+    );
     if (!retryScans.error) {
-      scanData = (retryScans.data || []) as Record<string, unknown>[];
+      scanData = retryScans.data || [];
       scanError = null;
       schemaWarning =
         'Database Supabase chưa chạy script 004_sync_and_schema_hardening.sql (bảng barcode_scans đang thiếu cột version/updated_by). Vui lòng chạy script trong Quản lý Supabase để đồng bộ đầy đủ cấu trúc.';
     } else if (isMissingColumnError(retryScans.error.message)) {
-      const starScans = await client
-        .from('barcode_scans')
-        .select('*')
-        .limit(1500);
+      const starScans = await fetchPagedSyncRows(
+        client,
+        'barcode_scans',
+        '*',
+        [],
+        1500,
+        500
+      );
       if (!starScans.error) {
-        scanData = (starScans.data || []) as Record<string, unknown>[];
+        scanData = starScans.data || [];
         scanError = null;
         schemaWarning =
           'Database Supabase chưa chạy script 004_sync_and_schema_hardening.sql (bảng barcode_scans đang thiếu một số cột mở rộng). Vui lòng chạy script trong Quản lý Supabase.';
@@ -1600,25 +1672,34 @@ export async function fetchAllSyncedData(
   }
 
   if (schedError && isMissingColumnError(schedError.message)) {
-    const retrySched = await client
-      .from('work_schedules')
-      .select(WORK_SCHEDULE_CORE_COLUMNS)
-      .order('work_date', { ascending: true })
-      .order('start_time', { ascending: true })
-      .limit(1500);
+    const retrySched = await fetchPagedSyncRows(
+      client,
+      'work_schedules',
+      WORK_SCHEDULE_CORE_COLUMNS,
+      [
+        { column: 'work_date', ascending: true },
+        { column: 'start_time', ascending: true },
+      ],
+      1500,
+      500
+    );
     if (!retrySched.error) {
-      schedData = (retrySched.data || []) as Record<string, unknown>[];
+      schedData = retrySched.data || [];
       schedError = null;
       schemaWarning =
         schemaWarning ||
         'Database Supabase chưa chạy script 004_sync_and_schema_hardening.sql (thiếu một số cột mở rộng của lịch làm việc). Vui lòng chạy script trong Quản lý Supabase để bật đầy đủ cột.';
     } else if (isMissingColumnError(retrySched.error.message)) {
-      const starSched = await client
-        .from('work_schedules')
-        .select('*')
-        .limit(1500);
+      const starSched = await fetchPagedSyncRows(
+        client,
+        'work_schedules',
+        '*',
+        [],
+        1500,
+        500
+      );
       if (!starSched.error) {
-        schedData = (starSched.data || []) as Record<string, unknown>[];
+        schedData = starSched.data || [];
         schedError = null;
         schemaWarning =
           schemaWarning ||
@@ -1683,7 +1764,7 @@ export async function fetchAllSyncedData(
       schedules: [],
       members: [],
       logs: [],
-      error: err.message,
+      error: formatSupabaseReadError(err.message, 'đồng bộ dữ liệu'),
     };
   }
 
@@ -1857,15 +1938,18 @@ export async function deleteBarcodeScansInSupabase(
   const authCheck = await requireAuthenticatedSession(client);
   if (!authCheck.ok) return { error: authCheck.error };
 
-  const { error } = await client.from('barcode_scans').delete().in('id', ids);
-  if (error) {
-    return {
-      error: formatSupabaseWriteError(
-        error.message,
-        'barcode_scans',
-        'Không thể xóa mã vạch.'
-      ),
-    };
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    const { error } = await client.from('barcode_scans').delete().in('id', chunk);
+    if (error) {
+      return {
+        error: formatSupabaseWriteError(
+          error.message,
+          'barcode_scans',
+          'Không thể xóa mã vạch.'
+        ),
+      };
+    }
   }
   return {};
 }
@@ -2618,8 +2702,9 @@ export async function pushBarcodeScansToSupabase(
     };
   });
 
-  for (let i = 0; i < rows.length; i += 200) {
-    const chunk = rows.slice(i, i + 200);
+  const upsertScanChunk = async (
+    chunk: (typeof rows)[number][]
+  ): Promise<{ error: { message?: string } | null }> => {
     let { error } = await client
       .from('barcode_scans')
       .upsert(chunk, { onConflict: 'id' });
@@ -2641,6 +2726,23 @@ export async function pushBarcodeScansToSupabase(
         .from('barcode_scans')
         .upsert(legacyChunk, { onConflict: 'id' });
       error = retry.error;
+    }
+    return { error };
+  };
+
+  for (let i = 0; i < rows.length; i += 100) {
+    const chunk = rows.slice(i, i + 100);
+    let { error } = await upsertScanChunk(chunk);
+
+    if (error && isStatementTimeoutError(error.message) && chunk.length > 15) {
+      error = null;
+      for (let j = 0; j < chunk.length; j += 15) {
+        const sub = await upsertScanChunk(chunk.slice(j, j + 15));
+        if (sub.error) {
+          error = sub.error;
+          break;
+        }
+      }
     }
 
     if (error) {
@@ -2697,8 +2799,9 @@ export async function pushSchedulesToSupabase(
     };
   });
 
-  for (let i = 0; i < rows.length; i += 200) {
-    const chunk = rows.slice(i, i + 200);
+  const upsertScheduleChunk = async (
+    chunk: (typeof rows)[number][]
+  ): Promise<{ error: { message?: string } | null }> => {
     let { error } = await client
       .from('work_schedules')
       .upsert(chunk, { onConflict: 'id' });
@@ -2733,6 +2836,23 @@ export async function pushSchedulesToSupabase(
           .from('work_schedules')
           .upsert(minimalChunk, { onConflict: 'id' });
         error = minimalRetry.error;
+      }
+    }
+    return { error };
+  };
+
+  for (let i = 0; i < rows.length; i += 40) {
+    const chunk = rows.slice(i, i + 40);
+    let { error } = await upsertScheduleChunk(chunk);
+
+    if (error && isStatementTimeoutError(error.message) && chunk.length > 10) {
+      error = null;
+      for (let j = 0; j < chunk.length; j += 10) {
+        const sub = await upsertScheduleChunk(chunk.slice(j, j + 10));
+        if (sub.error) {
+          error = sub.error;
+          break;
+        }
       }
     }
 

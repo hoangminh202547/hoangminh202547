@@ -2,7 +2,12 @@ import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 import { useEffect, useRef } from 'react';
 import { appCache } from './cache';
 import { normalizeEmail } from './permissions';
-import { formatSupabaseWriteError, requireAuthenticatedSession } from './supabase';
+import {
+  formatSupabaseReadError,
+  formatSupabaseWriteError,
+  isStatementTimeoutError,
+  requireAuthenticatedSession,
+} from './supabase';
 import type {
   AttendanceNoteEntry,
   AttendanceRecord,
@@ -38,6 +43,106 @@ export function getClientDbOpsCount(): number {
 export function subscribeClientDbOps(fn: (count: number) => void): () => void {
   opsListeners.add(fn);
   return () => opsListeners.delete(fn);
+}
+
+async function runPagedQueryWithTimeoutFallback<Row extends Record<string, unknown>>(
+  buildQuery: (
+    countMode: 'exact' | 'estimated' | undefined
+  ) => PromiseLike<{
+    data: unknown[] | null;
+    count: number | null;
+    error: { message?: string } | null;
+  }>,
+  page: number,
+  pageSize: number,
+  contextLabel: string
+): Promise<{ rows: Row[]; total: number; error?: string }> {
+  const from = (page - 1) * pageSize;
+  let { data, count, error } = await buildQuery('exact');
+
+  if (error && isStatementTimeoutError(error.message)) {
+    recordClientDbOp();
+    const est = await buildQuery('estimated');
+    data = est.data;
+    count = est.count;
+    error = est.error;
+
+    if (error && isStatementTimeoutError(error.message)) {
+      recordClientDbOp();
+      const plain = await buildQuery(undefined);
+      data = plain.data;
+      error = plain.error;
+      if (!error) {
+        const list = (data || []) as Row[];
+        return {
+          rows: list,
+          total: list.length < pageSize ? from + list.length : from + list.length + pageSize,
+        };
+      }
+    }
+  }
+
+  if (error) {
+    return {
+      rows: [],
+      total: 0,
+      error: formatSupabaseReadError(error.message, contextLabel),
+    };
+  }
+
+  return {
+    rows: (data || []) as Row[],
+    total: count ?? 0,
+  };
+}
+
+async function fetchAllRowsInChunks<Row extends Record<string, unknown>>(
+  fetchRange: (
+    from: number,
+    to: number
+  ) => PromiseLike<{ data: unknown[] | null; error: { message?: string } | null }>,
+  maxRows = 5000,
+  initialChunkSize = 1000
+): Promise<{ rows: Row[]; error?: { message?: string } | null }> {
+  const collected: Row[] = [];
+  let chunkSize = initialChunkSize;
+  let offset = 0;
+
+  while (offset < maxRows) {
+    const end = Math.min(maxRows - 1, offset + chunkSize - 1);
+    const { data, error } = await fetchRange(offset, end);
+    if (error) {
+      if (isStatementTimeoutError(error.message) && chunkSize > 250) {
+        chunkSize = 250;
+        recordClientDbOp();
+        continue;
+      }
+      return { rows: collected, error };
+    }
+    const batch = (data || []) as Row[];
+    collected.push(...batch);
+    if (batch.length < end - offset + 1) {
+      break;
+    }
+    offset += batch.length;
+    recordClientDbOp();
+  }
+
+  return { rows: collected, error: null };
+}
+
+async function runCountHeadWithFallback(
+  buildHeadQuery: (
+    countMode: 'exact' | 'estimated'
+  ) => PromiseLike<{ count: number | null; error: { message?: string } | null }>
+): Promise<number> {
+  const res = await buildHeadQuery('exact');
+  if (!res.error) return res.count ?? 0;
+  if (isStatementTimeoutError(res.error.message)) {
+    const est = await buildHeadQuery('estimated');
+    if (!est.error) return est.count ?? 0;
+  }
+  return 0;
 }
 
 // ============================================================================
@@ -345,44 +450,56 @@ export async function fetchOverviewSummary(
     in30Days.getDate()
   ).padStart(2, '0')}`;
 
-  recordClientDbOp(6);
-  const [schedRes, attRes, myFbRes, teamFbRes, expRes, retRes, promoRes] = await Promise.all([
-    client
-      .from('work_schedules')
-      .select('id,title,start_time,end_time,is_day_off,status')
-      .eq('work_date', todayStr)
-      .ilike('owner_email', cleanEmail)
-      .neq('status', 'cancelled'),
-    client
-      .from('attendance_logs')
-      .select('id,shift_name,check_in_at,status')
-      .eq('work_date', todayStr)
-      .ilike('owner_email', cleanEmail)
-      .order('check_in_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    client
-      .from('customer_feedbacks')
-      .select('id', { count: 'exact', head: true })
-      .eq('feedback_date', todayStr)
-      .ilike('owner_email', cleanEmail),
-    client
-      .from('customer_feedbacks')
-      .select('id', { count: 'exact', head: true })
-      .eq('feedback_date', todayStr),
-    client
-      .from('expiry_tracking')
-      .select('id', { count: 'exact', head: true })
-      .lte('exp_date', thresholdStr),
-    client
-      .from('return_records')
-      .select('id', { count: 'exact', head: true })
-      .eq('progress', 'processing'),
-    client
-      .from('promotions')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'active'),
-  ]);
+  recordClientDbOp(7);
+  const [schedRes, attRes, myFbCount, teamFbCount, expCount, retCount, promoCount] =
+    await Promise.all([
+      client
+        .from('work_schedules')
+        .select('id,title,start_time,end_time,is_day_off,status')
+        .eq('work_date', todayStr)
+        .ilike('owner_email', cleanEmail)
+        .neq('status', 'cancelled')
+        .limit(50),
+      client
+        .from('attendance_logs')
+        .select('id,shift_name,check_in_at,status')
+        .eq('work_date', todayStr)
+        .ilike('owner_email', cleanEmail)
+        .order('check_in_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      runCountHeadWithFallback((countMode) =>
+        client
+          .from('customer_feedbacks')
+          .select('id', { count: countMode, head: true })
+          .eq('feedback_date', todayStr)
+          .ilike('owner_email', cleanEmail)
+      ),
+      runCountHeadWithFallback((countMode) =>
+        client
+          .from('customer_feedbacks')
+          .select('id', { count: countMode, head: true })
+          .eq('feedback_date', todayStr)
+      ),
+      runCountHeadWithFallback((countMode) =>
+        client
+          .from('expiry_tracking')
+          .select('id', { count: countMode, head: true })
+          .lte('exp_date', thresholdStr)
+      ),
+      runCountHeadWithFallback((countMode) =>
+        client
+          .from('return_records')
+          .select('id', { count: countMode, head: true })
+          .eq('progress', 'processing')
+      ),
+      runCountHeadWithFallback((countMode) =>
+        client
+          .from('promotions')
+          .select('id', { count: countMode, head: true })
+          .eq('status', 'active')
+      ),
+    ]);
 
   const summary: OverviewSummary = {
     todayDate: todayStr,
@@ -402,11 +519,11 @@ export async function fetchOverviewSummary(
           status: String(attRes.data.status),
         }
       : null,
-    myTodayFeedbackCount: myFbRes.count ?? 0,
-    teamTodayFeedbackCount: teamFbRes.count ?? 0,
-    expiringSoonCount: expRes.count ?? 0,
-    processingReturnsCount: retRes.count ?? 0,
-    activePromosCount: promoRes.count ?? 0,
+    myTodayFeedbackCount: myFbCount,
+    teamTodayFeedbackCount: teamFbCount,
+    expiringSoonCount: expCount,
+    processingReturnsCount: retCount,
+    activePromosCount: promoCount,
   };
   appCache.set(cacheKey, summary, 20_000);
   return summary;
@@ -535,30 +652,39 @@ export async function fetchAttendancePage(
   recordClientDbOp();
   const from = (params.page - 1) * params.pageSize;
   const to = from + params.pageSize - 1;
+  const search = params.search.trim();
 
-  let q = client
-    .from('attendance_logs')
-    .select(
-      'id,schedule_id,owner_id,owner_email,employee_name,shift_name,work_date,check_in_at,check_out_at,is_unscheduled,status,notes_history,created_at,updated_at',
-      { count: 'exact' }
-    )
-    .order('work_date', { ascending: false })
-    .order('check_in_at', { ascending: false })
-    .range(from, to);
+  const res = await runPagedQueryWithTimeoutFallback(
+    (countMode) => {
+      let q = client
+        .from('attendance_logs')
+        .select(
+          'id,schedule_id,owner_id,owner_email,employee_name,shift_name,work_date,check_in_at,check_out_at,is_unscheduled,status,notes_history,created_at,updated_at',
+          countMode ? { count: countMode } : undefined
+        )
+        .order('work_date', { ascending: false })
+        .order('check_in_at', { ascending: false })
+        .range(from, to);
 
-  if (params.datePrefix) {
-    q = q.like('work_date', `${params.datePrefix}%`);
-  }
-  if (params.search.trim()) {
-    const s = params.search.trim();
-    q = q.or(`employee_name.ilike.%${s}%,owner_email.ilike.%${s}%,shift_name.ilike.%${s}%`);
-  }
+      if (params.datePrefix) {
+        q = q.like('work_date', `${params.datePrefix}%`);
+      }
+      if (search) {
+        q = q.or(
+          `employee_name.ilike.%${search}%,owner_email.ilike.%${search}%,shift_name.ilike.%${search}%`
+        );
+      }
+      return q;
+    },
+    params.page,
+    params.pageSize,
+    'Chấm công'
+  );
 
-  const { data, count, error } = await q;
-  if (error) return { rows: [], total: 0, error: error.message };
+  if (res.error) return { rows: [], total: 0, error: res.error };
   return {
-    rows: (data || []).map((r) => mapAttendance(r as Record<string, unknown>)),
-    total: count ?? 0,
+    rows: res.rows.map((r) => mapAttendance(r)),
+    total: res.total,
   };
 }
 
@@ -879,32 +1005,39 @@ export async function fetchFeedbackPage(
   const from = (params.page - 1) * params.pageSize;
   const to = from + params.pageSize - 1;
 
-  let q = client
-    .from('customer_feedbacks')
-    .select(
-      'id,owner_id,owner_email,employee_name,feedback_date,category,product_name,content,image_path,image_thumb_path,created_at',
-      { count: 'exact' }
-    )
-    .order('created_at', { ascending: true }) // Oldest -> Newest default per spec
-    .range(from, to);
+  const res = await runPagedQueryWithTimeoutFallback(
+    (countMode) => {
+      let q = client
+        .from('customer_feedbacks')
+        .select(
+          'id,owner_id,owner_email,employee_name,feedback_date,category,product_name,content,image_path,image_thumb_path,created_at',
+          countMode ? { count: countMode } : undefined
+        )
+        .order('created_at', { ascending: true })
+        .range(from, to);
 
-  if (params.dateFrom && params.dateTo) {
-    q = q.gte('feedback_date', params.dateFrom).lte('feedback_date', params.dateTo);
-  } else if (params.datePrefix) {
-    q = q.like('feedback_date', `${params.datePrefix}%`);
-  }
-  if (params.ownerFilter) {
-    q = q.ilike('owner_email', params.ownerFilter);
-  }
-  if (params.categoryFilter && params.categoryFilter !== 'ALL') {
-    q = q.eq('category', params.categoryFilter);
-  }
+      if (params.dateFrom && params.dateTo) {
+        q = q.gte('feedback_date', params.dateFrom).lte('feedback_date', params.dateTo);
+      } else if (params.datePrefix) {
+        q = q.like('feedback_date', `${params.datePrefix}%`);
+      }
+      if (params.ownerFilter) {
+        q = q.ilike('owner_email', params.ownerFilter);
+      }
+      if (params.categoryFilter && params.categoryFilter !== 'ALL') {
+        q = q.eq('category', params.categoryFilter);
+      }
+      return q;
+    },
+    params.page,
+    params.pageSize,
+    'Ý kiến khách hàng'
+  );
 
-  const { data, count, error } = await q;
-  if (error) return { rows: [], total: 0, error: error.message };
+  if (res.error) return { rows: [], total: 0, error: res.error };
   return {
-    rows: (data || []).map((r) => mapFeedback(r as Record<string, unknown>)),
-    total: count ?? 0,
+    rows: res.rows.map((r) => mapFeedback(r)),
+    total: res.total,
   };
 }
 
@@ -919,30 +1052,41 @@ export async function fetchAllFeedbackForExport(
   }
 ): Promise<{ rows: CustomerFeedback[]; error?: string }> {
   recordClientDbOp();
-  let q = client
-    .from('customer_feedbacks')
-    .select(
-      'id,owner_id,owner_email,employee_name,feedback_date,category,product_name,content,image_path,image_thumb_path,created_at'
-    )
-    .order('created_at', { ascending: true })
-    .limit(5000);
+  const res = await fetchAllRowsInChunks(
+    (from, to) => {
+      let q = client
+        .from('customer_feedbacks')
+        .select(
+          'id,owner_id,owner_email,employee_name,feedback_date,category,product_name,content,image_path,image_thumb_path,created_at'
+        )
+        .order('created_at', { ascending: true })
+        .range(from, to);
 
-  if (params.dateFrom && params.dateTo) {
-    q = q.gte('feedback_date', params.dateFrom).lte('feedback_date', params.dateTo);
-  } else if (params.datePrefix) {
-    q = q.like('feedback_date', `${params.datePrefix}%`);
-  }
-  if (params.ownerFilter) {
-    q = q.ilike('owner_email', params.ownerFilter);
-  }
-  if (params.categoryFilter && params.categoryFilter !== 'ALL') {
-    q = q.eq('category', params.categoryFilter);
-  }
+      if (params.dateFrom && params.dateTo) {
+        q = q.gte('feedback_date', params.dateFrom).lte('feedback_date', params.dateTo);
+      } else if (params.datePrefix) {
+        q = q.like('feedback_date', `${params.datePrefix}%`);
+      }
+      if (params.ownerFilter) {
+        q = q.ilike('owner_email', params.ownerFilter);
+      }
+      if (params.categoryFilter && params.categoryFilter !== 'ALL') {
+        q = q.eq('category', params.categoryFilter);
+      }
+      return q;
+    },
+    5000,
+    500
+  );
 
-  const { data, error } = await q;
-  if (error) return { rows: [], error: error.message };
+  if (res.error) {
+    return {
+      rows: [],
+      error: formatSupabaseReadError(res.error.message, 'xuất Excel ý kiến khách hàng'),
+    };
+  }
   return {
-    rows: (data || []).map((r) => mapFeedback(r as Record<string, unknown>)),
+    rows: res.rows.map((r) => mapFeedback(r)),
   };
 }
 
@@ -1041,27 +1185,35 @@ export async function fetchCatalogPage(
   recordClientDbOp();
   const from = (params.page - 1) * params.pageSize;
   const to = from + params.pageSize - 1;
+  const search = params.search.trim();
 
-  let q = client
-    .from('product_catalog')
-    .select('id,product_code,barcode,name,unit,price,supplier_name,updated_by,created_at,updated_at', {
-      count: 'exact',
-    })
-    .order('product_code', { ascending: true })
-    .range(from, to);
+  const res = await runPagedQueryWithTimeoutFallback(
+    (countMode) => {
+      let q = client
+        .from('product_catalog')
+        .select(
+          'id,product_code,barcode,name,unit,price,supplier_name,updated_by,created_at,updated_at',
+          countMode ? { count: countMode } : undefined
+        )
+        .order('product_code', { ascending: true })
+        .range(from, to);
 
-  if (params.search.trim()) {
-    const s = params.search.trim();
-    q = q.or(
-      `product_code.ilike.%${s}%,barcode.ilike.%${s}%,name.ilike.%${s}%,supplier_name.ilike.%${s}%`
-    );
-  }
+      if (search) {
+        q = q.or(
+          `product_code.ilike.%${search}%,barcode.ilike.%${search}%,name.ilike.%${search}%,supplier_name.ilike.%${search}%`
+        );
+      }
+      return q;
+    },
+    params.page,
+    params.pageSize,
+    'Danh mục hàng'
+  );
 
-  const { data, count, error } = await q;
-  if (error) return { rows: [], total: 0, error: error.message };
+  if (res.error) return { rows: [], total: 0, error: res.error };
   return {
-    rows: (data || []).map((r) => mapCatalog(r as Record<string, unknown>)),
-    total: count ?? 0,
+    rows: res.rows.map((r) => mapCatalog(r)),
+    total: res.total,
   };
 }
 
@@ -1072,14 +1224,19 @@ export async function fetchAllCatalogForCache(
   if (cached) return cached;
 
   recordClientDbOp();
-  const { data, error } = await client
-    .from('product_catalog')
-    .select('id,product_code,barcode,name,unit,price,supplier_name,updated_by,created_at,updated_at')
-    .order('product_code', { ascending: true })
-    .limit(5000);
+  const res = await fetchAllRowsInChunks(
+    (from, to) =>
+      client
+        .from('product_catalog')
+        .select('id,product_code,barcode,name,unit,price,supplier_name,updated_by,created_at,updated_at')
+        .order('product_code', { ascending: true })
+        .range(from, to),
+    5000,
+    1000
+  );
 
-  if (error || !data) return [];
-  const mapped = data.map((r) => mapCatalog(r as Record<string, unknown>));
+  if (res.error || res.rows.length === 0) return [];
+  const mapped = res.rows.map((r) => mapCatalog(r));
   appCache.set('catalog:all', mapped, 180_000);
   return mapped;
 }
@@ -1130,16 +1287,17 @@ export async function batchDeleteCatalogWithCheck(
 
   const codes = items.map((i) => i.productCode);
 
-  recordClientDbOp(2);
-  const [expRef, promoRef] = await Promise.all([
-    client.from('expiry_tracking').select('product_code').in('product_code', codes),
-    client.from('promotions').select('product_code').in('product_code', codes),
-  ]);
-
-  const inUseSet = new Set<string>([
-    ...(expRef.data || []).map((r) => String(r.product_code)),
-    ...(promoRef.data || []).map((r) => String(r.product_code)),
-  ]);
+  const inUseSet = new Set<string>();
+  for (let i = 0; i < codes.length; i += 100) {
+    const codeChunk = codes.slice(i, i + 100);
+    recordClientDbOp(2);
+    const [expRef, promoRef] = await Promise.all([
+      client.from('expiry_tracking').select('product_code').in('product_code', codeChunk),
+      client.from('promotions').select('product_code').in('product_code', codeChunk),
+    ]);
+    for (const r of expRef.data || []) inUseSet.add(String(r.product_code));
+    for (const r of promoRef.data || []) inUseSet.add(String(r.product_code));
+  }
 
   const deletableIds = items
     .filter((i) => !inUseSet.has(i.productCode))
@@ -1149,18 +1307,21 @@ export async function batchDeleteCatalogWithCheck(
     .map((i) => i.productCode);
 
   if (deletableIds.length > 0) {
-    recordClientDbOp();
-    const { error } = await client.from('product_catalog').delete().in('id', deletableIds);
-    if (error) {
-      return {
-        deleted: 0,
-        blockedCodes,
-        error: formatSupabaseWriteError(
-          error.message,
-          'product_catalog',
-          'Không thể xóa danh mục hàng.'
-        ),
-      };
+    for (let i = 0; i < deletableIds.length; i += 100) {
+      const idChunk = deletableIds.slice(i, i + 100);
+      recordClientDbOp();
+      const { error } = await client.from('product_catalog').delete().in('id', idChunk);
+      if (error) {
+        return {
+          deleted: 0,
+          blockedCodes,
+          error: formatSupabaseWriteError(
+            error.message,
+            'product_catalog',
+            'Không thể xóa danh mục hàng.'
+          ),
+        };
+      }
     }
     appCache.invalidatePrefix('catalog:');
   }
@@ -1189,28 +1350,35 @@ export async function fetchPoliciesPage(
   recordClientDbOp();
   const from = (params.page - 1) * params.pageSize;
   const to = from + params.pageSize - 1;
+  const search = params.search.trim();
 
-  let q = client
-    .from('supplier_policies')
-    .select(
-      'id,category,supplier_name,supplier_system_name,product_name,return_policy,warn_months_before,updated_by,created_at,updated_at',
-      { count: 'exact' }
-    )
-    .order('supplier_system_name', { ascending: true })
-    .range(from, to);
+  const res = await runPagedQueryWithTimeoutFallback(
+    (countMode) => {
+      let q = client
+        .from('supplier_policies')
+        .select(
+          'id,category,supplier_name,supplier_system_name,product_name,return_policy,warn_months_before,updated_by,created_at,updated_at',
+          countMode ? { count: countMode } : undefined
+        )
+        .order('supplier_system_name', { ascending: true })
+        .range(from, to);
 
-  if (params.search.trim()) {
-    const s = params.search.trim();
-    q = q.or(
-      `supplier_system_name.ilike.%${s}%,supplier_name.ilike.%${s}%,product_name.ilike.%${s}%,category.ilike.%${s}%`
-    );
-  }
+      if (search) {
+        q = q.or(
+          `supplier_system_name.ilike.%${search}%,supplier_name.ilike.%${search}%,product_name.ilike.%${search}%,category.ilike.%${search}%`
+        );
+      }
+      return q;
+    },
+    params.page,
+    params.pageSize,
+    'Chính sách đổi trả NCC'
+  );
 
-  const { data, count, error } = await q;
-  if (error) return { rows: [], total: 0, error: error.message };
+  if (res.error) return { rows: [], total: 0, error: res.error };
   return {
-    rows: (data || []).map((r) => mapPolicy(r as Record<string, unknown>)),
-    total: count ?? 0,
+    rows: res.rows.map((r) => mapPolicy(r)),
+    total: res.total,
   };
 }
 
@@ -1221,16 +1389,21 @@ export async function fetchAllPoliciesForCache(
   if (cached) return cached;
 
   recordClientDbOp();
-  const { data, error } = await client
-    .from('supplier_policies')
-    .select(
-      'id,category,supplier_name,supplier_system_name,product_name,return_policy,warn_months_before,updated_by,created_at,updated_at'
-    )
-    .order('supplier_system_name', { ascending: true })
-    .limit(5000);
+  const res = await fetchAllRowsInChunks(
+    (from, to) =>
+      client
+        .from('supplier_policies')
+        .select(
+          'id,category,supplier_name,supplier_system_name,product_name,return_policy,warn_months_before,updated_by,created_at,updated_at'
+        )
+        .order('supplier_system_name', { ascending: true })
+        .range(from, to),
+    5000,
+    1000
+  );
 
-  if (error || !data) return [];
-  const mapped = data.map((r) => mapPolicy(r as Record<string, unknown>));
+  if (res.error || res.rows.length === 0) return [];
+  const mapped = res.rows.map((r) => mapPolicy(r));
   appCache.set('policies:all', mapped, 180_000);
   return mapped;
 }
@@ -1281,16 +1454,21 @@ export async function deletePoliciesBatch(
   const authCheck = await requireAuthenticatedSession(client);
   if (!authCheck.ok) return { error: authCheck.error };
 
-  recordClientDbOp();
-  const { error } = await client.from('supplier_policies').delete().in('id', ids);
-  if (error) {
-    return {
-      error: formatSupabaseWriteError(
-        error.message,
-        'supplier_policies',
-        'Không thể xóa chính sách đổi trả NCC.'
-      ),
-    };
+  for (let i = 0; i < ids.length; i += 100) {
+    recordClientDbOp();
+    const { error } = await client
+      .from('supplier_policies')
+      .delete()
+      .in('id', ids.slice(i, i + 100));
+    if (error) {
+      return {
+        error: formatSupabaseWriteError(
+          error.message,
+          'supplier_policies',
+          'Không thể xóa chính sách đổi trả NCC.'
+        ),
+      };
+    }
   }
   appCache.invalidatePrefix('policies:');
   return {};
@@ -1332,34 +1510,43 @@ export async function fetchExpiryPage(
   recordClientDbOp();
   const from = (params.page - 1) * params.pageSize;
   const to = from + params.pageSize - 1;
+  const ptFilter = params.ptFilter.trim();
+  const supplierFilter = params.supplierFilter.trim();
+  const search = params.search.trim();
 
-  let q = client
-    .from('expiry_tracking')
-    .select(
-      'id,product_code,barcode,product_name,unit,supplier_system_name,return_policy,warn_months_before,mfg_date,exp_date,pt_code,note,updated_by,created_at,updated_at',
-      { count: 'exact' }
-    )
-    .order('exp_date', { ascending: true })
-    .range(from, to);
+  const res = await runPagedQueryWithTimeoutFallback(
+    (countMode) => {
+      let q = client
+        .from('expiry_tracking')
+        .select(
+          'id,product_code,barcode,product_name,unit,supplier_system_name,return_policy,warn_months_before,mfg_date,exp_date,pt_code,note,updated_by,created_at,updated_at',
+          countMode ? { count: countMode } : undefined
+        )
+        .order('exp_date', { ascending: true })
+        .range(from, to);
 
-  if (params.ptFilter.trim()) {
-    q = q.ilike('pt_code', `%${params.ptFilter.trim()}%`);
-  }
-  if (params.supplierFilter.trim()) {
-    q = q.ilike('supplier_system_name', `%${params.supplierFilter.trim()}%`);
-  }
-  if (params.search.trim()) {
-    const s = params.search.trim();
-    q = q.or(
-      `product_code.ilike.%${s}%,barcode.ilike.%${s}%,product_name.ilike.%${s}%,supplier_system_name.ilike.%${s}%,pt_code.ilike.%${s}%`
-    );
-  }
+      if (ptFilter) {
+        q = q.ilike('pt_code', `%${ptFilter}%`);
+      }
+      if (supplierFilter) {
+        q = q.ilike('supplier_system_name', `%${supplierFilter}%`);
+      }
+      if (search) {
+        q = q.or(
+          `product_code.ilike.%${search}%,barcode.ilike.%${search}%,product_name.ilike.%${search}%,supplier_system_name.ilike.%${search}%,pt_code.ilike.%${search}%`
+        );
+      }
+      return q;
+    },
+    params.page,
+    params.pageSize,
+    'Kiểm soát HSD'
+  );
 
-  const { data, count, error } = await q;
-  if (error) return { rows: [], total: 0, error: error.message };
+  if (res.error) return { rows: [], total: 0, error: res.error };
   return {
-    rows: (data || []).map((r) => mapExpiry(r as Record<string, unknown>)),
-    total: count ?? 0,
+    rows: res.rows.map((r) => mapExpiry(r)),
+    total: res.total,
   };
 }
 
@@ -1411,16 +1598,21 @@ export async function deleteExpiryBatch(
   const authCheck = await requireAuthenticatedSession(client);
   if (!authCheck.ok) return { error: authCheck.error };
 
-  recordClientDbOp();
-  const { error } = await client.from('expiry_tracking').delete().in('id', ids);
-  if (error) {
-    return {
-      error: formatSupabaseWriteError(
-        error.message,
-        'expiry_tracking',
-        'Không thể xóa bản ghi hạn sử dụng.'
-      ),
-    };
+  for (let i = 0; i < ids.length; i += 100) {
+    recordClientDbOp();
+    const { error } = await client
+      .from('expiry_tracking')
+      .delete()
+      .in('id', ids.slice(i, i + 100));
+    if (error) {
+      return {
+        error: formatSupabaseWriteError(
+          error.message,
+          'expiry_tracking',
+          'Không thể xóa bản ghi hạn sử dụng.'
+        ),
+      };
+    }
   }
   return {};
 }
@@ -1459,34 +1651,45 @@ export async function fetchReturnsPage(
   recordClientDbOp();
   const from = (params.page - 1) * params.pageSize;
   const to = from + params.pageSize - 1;
+  const supplierFilter = params.supplierFilter.trim();
+  const itemFilter = params.itemFilter.trim();
+  const methodFilter = params.methodFilter.trim();
+  const ptFilter = params.ptFilter.trim();
 
-  let q = client
-    .from('return_records')
-    .select(
-      'id,pt_code,supplier_system_name,product_summary,return_method,progress,reported_date,completed_date,last_update_note,updated_by,created_at,updated_at',
-      { count: 'exact' }
-    )
-    .order('updated_at', { ascending: false })
-    .range(from, to);
+  const res = await runPagedQueryWithTimeoutFallback(
+    (countMode) => {
+      let q = client
+        .from('return_records')
+        .select(
+          'id,pt_code,supplier_system_name,product_summary,return_method,progress,reported_date,completed_date,last_update_note,updated_by,created_at,updated_at',
+          countMode ? { count: countMode } : undefined
+        )
+        .order('updated_at', { ascending: false })
+        .range(from, to);
 
-  if (params.supplierFilter.trim()) {
-    q = q.ilike('supplier_system_name', `%${params.supplierFilter.trim()}%`);
-  }
-  if (params.itemFilter.trim()) {
-    q = q.ilike('product_summary', `%${params.itemFilter.trim()}%`);
-  }
-  if (params.methodFilter.trim()) {
-    q = q.ilike('return_method', `%${params.methodFilter.trim()}%`);
-  }
-  if (params.ptFilter.trim()) {
-    q = q.ilike('pt_code', `%${params.ptFilter.trim()}%`);
-  }
+      if (supplierFilter) {
+        q = q.ilike('supplier_system_name', `%${supplierFilter}%`);
+      }
+      if (itemFilter) {
+        q = q.ilike('product_summary', `%${itemFilter}%`);
+      }
+      if (methodFilter) {
+        q = q.ilike('return_method', `%${methodFilter}%`);
+      }
+      if (ptFilter) {
+        q = q.ilike('pt_code', `%${ptFilter}%`);
+      }
+      return q;
+    },
+    params.page,
+    params.pageSize,
+    'Đổi trả hàng hóa'
+  );
 
-  const { data, count, error } = await q;
-  if (error) return { rows: [], total: 0, error: error.message };
+  if (res.error) return { rows: [], total: 0, error: res.error };
   return {
-    rows: (data || []).map((r) => mapReturnRecord(r as Record<string, unknown>)),
-    total: count ?? 0,
+    rows: res.rows.map((r) => mapReturnRecord(r)),
+    total: res.total,
   };
 }
 
@@ -1535,16 +1738,21 @@ export async function deleteReturnRecords(
   const authCheck = await requireAuthenticatedSession(client);
   if (!authCheck.ok) return { error: authCheck.error };
 
-  recordClientDbOp();
-  const { error } = await client.from('return_records').delete().in('id', ids);
-  if (error) {
-    return {
-      error: formatSupabaseWriteError(
-        error.message,
-        'return_records',
-        'Không thể xóa hồ sơ đổi trả hàng hóa.'
-      ),
-    };
+  for (let i = 0; i < ids.length; i += 100) {
+    recordClientDbOp();
+    const { error } = await client
+      .from('return_records')
+      .delete()
+      .in('id', ids.slice(i, i + 100));
+    if (error) {
+      return {
+        error: formatSupabaseWriteError(
+          error.message,
+          'return_records',
+          'Không thể xóa hồ sơ đổi trả hàng hóa.'
+        ),
+      };
+    }
   }
   return {};
 }
@@ -1589,36 +1797,43 @@ export async function fetchPromotionsPage(
   recordClientDbOp();
   const from = (params.page - 1) * params.pageSize;
   const to = from + params.pageSize - 1;
+  const search = params.search.trim();
 
-  let q = client
-    .from('promotions')
-    .select(
-      'id,product_code,barcode,product_name,has_b_badge,unit,exp_date,quantity,discount_rate,regular_price,promo_price,pt_code,status,updated_by,created_at,updated_at',
-      { count: 'exact' }
-    )
-    .order('exp_date', { ascending: true })
-    .range(from, to);
+  const res = await runPagedQueryWithTimeoutFallback(
+    (countMode) => {
+      let q = client
+        .from('promotions')
+        .select(
+          'id,product_code,barcode,product_name,has_b_badge,unit,exp_date,quantity,discount_rate,regular_price,promo_price,pt_code,status,updated_by,created_at,updated_at',
+          countMode ? { count: countMode } : undefined
+        )
+        .order('exp_date', { ascending: true })
+        .range(from, to);
 
-  if (params.statusFilter !== 'ALL') {
-    q = q.eq('status', params.statusFilter);
-  }
-  if (params.onlyBBadge === 'YES') {
-    q = q.eq('has_b_badge', true);
-  } else if (params.onlyBBadge === 'NO') {
-    q = q.eq('has_b_badge', false);
-  }
-  if (params.search.trim()) {
-    const s = params.search.trim();
-    q = q.or(
-      `product_code.ilike.%${s}%,barcode.ilike.%${s}%,product_name.ilike.%${s}%,pt_code.ilike.%${s}%`
-    );
-  }
+      if (params.statusFilter !== 'ALL') {
+        q = q.eq('status', params.statusFilter);
+      }
+      if (params.onlyBBadge === 'YES') {
+        q = q.eq('has_b_badge', true);
+      } else if (params.onlyBBadge === 'NO') {
+        q = q.eq('has_b_badge', false);
+      }
+      if (search) {
+        q = q.or(
+          `product_code.ilike.%${search}%,barcode.ilike.%${search}%,product_name.ilike.%${search}%,pt_code.ilike.%${search}%`
+        );
+      }
+      return q;
+    },
+    params.page,
+    params.pageSize,
+    'Chương trình khuyến mãi'
+  );
 
-  const { data, count, error } = await q;
-  if (error) return { rows: [], total: 0, error: error.message };
+  if (res.error) return { rows: [], total: 0, error: res.error };
   return {
-    rows: (data || []).map((r) => mapPromotion(r as Record<string, unknown>)),
-    total: count ?? 0,
+    rows: res.rows.map((r) => mapPromotion(r)),
+    total: res.total,
   };
 }
 
@@ -1670,16 +1885,21 @@ export async function deletePromotionsBatch(
   const authCheck = await requireAuthenticatedSession(client);
   if (!authCheck.ok) return { error: authCheck.error };
 
-  recordClientDbOp();
-  const { error } = await client.from('promotions').delete().in('id', ids);
-  if (error) {
-    return {
-      error: formatSupabaseWriteError(
-        error.message,
-        'promotions',
-        'Không thể xóa chương trình khuyến mãi.'
-      ),
-    };
+  for (let i = 0; i < ids.length; i += 100) {
+    recordClientDbOp();
+    const { error } = await client
+      .from('promotions')
+      .delete()
+      .in('id', ids.slice(i, i + 100));
+    if (error) {
+      return {
+        error: formatSupabaseWriteError(
+          error.message,
+          'promotions',
+          'Không thể xóa chương trình khuyến mãi.'
+        ),
+      };
+    }
   }
   return {};
 }
@@ -1827,8 +2047,12 @@ export async function getReferencedStoragePaths(
 ): Promise<Set<string>> {
   recordClientDbOp(2);
   const [profilesRes, fbRes] = await Promise.all([
-    client.from('user_profiles').select('avatar_path'),
-    client.from('customer_feedbacks').select('image_path,image_thumb_path'),
+    client.from('user_profiles').select('avatar_path').neq('avatar_path', '').limit(2000),
+    client
+      .from('customer_feedbacks')
+      .select('image_path,image_thumb_path')
+      .or('image_path.neq.,image_thumb_path.neq.')
+      .limit(5000),
   ]);
   const refs = new Set<string>();
   for (const p of profilesRes.data || []) {
